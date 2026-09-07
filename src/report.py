@@ -83,7 +83,7 @@ def replay(rows):
 
 def team_stats(rows):
     """Record and goals per team, straight from the results."""
-    stats = defaultdict(lambda: {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0})
+    stats = defaultdict(lambda: {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0})
     for r in rows:
         hg, ag = int(r["home_goals"]), int(r["away_goals"])
         h, a = stats[r["home_team"]], stats[r["away_team"]]
@@ -94,18 +94,34 @@ def team_stats(rows):
         if hg > ag:
             h["w"] += 1
             a["l"] += 1
+            h["pts"] += 3
         elif hg < ag:
             h["l"] += 1
             a["w"] += 1
+            a["pts"] += 3
         else:
             h["d"] += 1
             a["d"] += 1
+            h["pts"] += 1
+            a["pts"] += 1
     return stats
+
+
+def official_positions(stats):
+    """Position in the official table: points, then goal difference, then goals
+    scored - the tie-breaks fussball.de uses before a direct comparison."""
+    order = sorted(
+        stats,
+        key=lambda t: (stats[t]["pts"], stats[t]["gf"] - stats[t]["ga"], stats[t]["gf"]),
+        reverse=True,
+    )
+    return {team: i + 1 for i, team in enumerate(order)}
 
 
 def build_table(rows):
     ratings, played, matchdays, series = replay(rows)
     stats = team_stats(rows)
+    positions = official_positions(stats)
 
     table = []
     for team, values in series.items():
@@ -121,6 +137,7 @@ def build_table(rows):
                 "record": (s["w"], s["d"], s["l"]),
                 "gf": s["gf"],
                 "ga": s["ga"],
+                "position": positions[team],
                 "series": values,
             }
         )
@@ -201,6 +218,13 @@ def render(season, rows):
             sign = "+" if t["delta"] >= 0 else "−"
             cls = "up" if t["delta"] > 0.05 else ("down" if t["delta"] < -0.05 else "flat")
             delta = f'<span class="{cls}">{sign}{num(abs(t["delta"]))}</span>'
+        # Positive: the power ranking places the team higher than the table does.
+        diff = t["position"] - (rank + 1)
+        if diff == 0:
+            gap = '<span class="flat">±0</span>'
+        else:
+            cls = "up" if diff > 0 else "down"
+            gap = f'<span class="{cls}">{"+" if diff > 0 else "−"}{abs(diff)}</span>'
         body_rows.append(
             f'<tr data-rank="{rank}" style="--c:{PALETTE[rank % len(PALETTE)]}">'
             f'<td class="rank">{rank + 1}</td>'
@@ -211,6 +235,7 @@ def render(season, rows):
             f"<td>{w}-{d}-{l}</td>"
             f"<td>{t['gf']}:{t['ga']}</td>"
             f"<td>{t['gf'] - t['ga']:+d}</td>"
+            f"<td class=\"tab\">{t['position']}{gap}</td>"
             f"</tr>"
         )
 
@@ -246,6 +271,7 @@ def render(season, rows):
   tr.sel .sw {{ background:var(--c); }}
   tr.sel td.team {{ font-weight:600; }}
   .up {{ color:#15803d; }} .down {{ color:#b91c1c; }} .flat {{ color:var(--muted); }}
+  td.tab span {{ margin-left:6px; font-size:13px; }}
   .chart {{ margin-top:8px; }}
   svg {{ width:100%; height:auto; display:block; }}
   .grid {{ stroke:var(--line); stroke-width:1; }}
@@ -278,13 +304,18 @@ def render(season, rows):
     <thead>
       <tr>
         <th>#</th><th>Team</th><th>Power</th><th>+/&minus;</th>
-        <th>Sp</th><th>S-U-N</th><th>Tore</th><th>Diff</th>
+        <th>Sp</th><th>S-U-N</th><th>Tore</th><th>Diff</th><th>Tabelle</th>
       </tr>
     </thead>
     <tbody>
       {chr(10).join("      " + r for r in body_rows).strip()}
     </tbody>
   </table>
+  <p class="hint"><strong>Tabelle</strong> ist der offizielle Tabellenplatz; der Wert dahinter
+  ist die Differenz zum Platz in diesem Ranking. <span class="up">+2</span> heißt: hier zwei
+  Plätze besser als in der Tabelle, das Team hat also für seine Punkte die stärkeren Gegner
+  geschlagen oder deutlicher gewonnen. Die Spalte <strong>+/&minus;</strong> ist dagegen die
+  Veränderung des Power Scores gegenüber dem letzten Spieltag.</p>
 
   <h2>Verlauf</h2>
   <div class="chart">{svg_chart(table, matchdays)}</div>

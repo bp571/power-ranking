@@ -30,6 +30,7 @@
   tr.sel .sw { background:var(--c); }
   tr.sel td.team { font-weight:600; }
   .up { color:#15803d; } .down { color:#b91c1c; } .flat { color:var(--muted); }
+  td.tab span { margin-left:6px; font-size:13px; }
   .chart { margin-top:8px; }
   svg { width:100%; height:auto; display:block; }
   .grid { stroke:var(--line); stroke-width:1; }
@@ -62,26 +63,31 @@
     <thead>
       <tr>
         <th>#</th><th>Team</th><th>Power</th><th>+/&minus;</th>
-        <th>Sp</th><th>S-U-N</th><th>Tore</th><th>Diff</th>
+        <th>Sp</th><th>S-U-N</th><th>Tore</th><th>Diff</th><th>Tabelle</th>
       </tr>
     </thead>
     <tbody>
-      <tr data-rank="0" style="--c:#1f77b4"><td class="rank">1</td><td class="team"><span class="sw"></span>SV Strimmig</td><td class="power">53,7</td><td><span class="up">+1,8</span></td><td>5</td><td>4-1-0</td><td>15:3</td><td>+12</td></tr>
-      <tr data-rank="1" style="--c:#d62728"><td class="rank">2</td><td class="team"><span class="sw"></span>TuS Kirchberg II</td><td class="power">53,3</td><td><span class="up">+0,4</span></td><td>5</td><td>3-2-0</td><td>15:2</td><td>+13</td></tr>
-      <tr data-rank="2" style="--c:#2ca02c"><td class="rank">3</td><td class="team"><span class="sw"></span>SG Rheinblick Oberwesel</td><td class="power">51,4</td><td><span class="up">+0,6</span></td><td>5</td><td>4-0-1</td><td>10:7</td><td>+3</td></tr>
-      <tr data-rank="3" style="--c:#ff7f0e"><td class="rank">4</td><td class="team"><span class="sw"></span>VfB Baybachhöhe</td><td class="power">50,7</td><td><span class="down">−0,6</span></td><td>4</td><td>2-1-1</td><td>7:4</td><td>+3</td></tr>
-      <tr data-rank="4" style="--c:#9467bd"><td class="rank">5</td><td class="team"><span class="sw"></span>SC Weiler</td><td class="power">50,3</td><td><span class="up">+0,6</span></td><td>5</td><td>2-1-2</td><td>13:13</td><td>+0</td></tr>
-      <tr data-rank="5" style="--c:#8c564b"><td class="rank">6</td><td class="team"><span class="sw"></span>SG Vorderhunsrück Sabershausen</td><td class="power">50,0</td><td><span class="up">+0,2</span></td><td>5</td><td>1-3-1</td><td>6:8</td><td>-2</td></tr>
-      <tr data-rank="6" style="--c:#e377c2"><td class="rank">7</td><td class="team"><span class="sw"></span>SG Zell</td><td class="power">49,9</td><td><span class="up">+0,6</span></td><td>5</td><td>2-1-2</td><td>5:8</td><td>-3</td></tr>
-      <tr data-rank="7" style="--c:#17becf"><td class="rank">8</td><td class="team"><span class="sw"></span>SV Blankenrath</td><td class="power">49,8</td><td><span class="up">+0,3</span></td><td>5</td><td>2-1-2</td><td>12:11</td><td>+1</td></tr>
-      <tr data-rank="8" style="--c:#bcbd22"><td class="rank">9</td><td class="team"><span class="sw"></span>TuS Rheinböllen</td><td class="power">49,7</td><td><span class="down">−0,3</span></td><td>4</td><td>1-1-2</td><td>5:4</td><td>+1</td></tr>
-      <tr data-rank="9" style="--c:#7f7f7f"><td class="rank">10</td><td class="team"><span class="sw"></span>SG Braunshorn</td><td class="power">49,4</td><td><span class="down">−0,7</span></td><td>5</td><td>2-0-3</td><td>8:8</td><td>+0</td></tr>
-      <tr data-rank="10" style="--c:#393b79"><td class="rank">11</td><td class="team"><span class="sw"></span>SSV Boppard</td><td class="power">48,5</td><td><span class="down">−0,8</span></td><td>5</td><td>1-1-3</td><td>5:9</td><td>-4</td></tr>
-      <tr data-rank="11" style="--c:#b5651d"><td class="rank">12</td><td class="team"><span class="sw"></span>SG Bremm</td><td class="power">48,2</td><td><span class="down">−0,7</span></td><td>5</td><td>0-3-2</td><td>0:5</td><td>-5</td></tr>
-      <tr data-rank="12" style="--c:#5254a3"><td class="rank">13</td><td class="team"><span class="sw"></span>SG Werlau</td><td class="power">47,7</td><td><span class="down">−1,6</span></td><td>5</td><td>1-1-3</td><td>9:18</td><td>-9</td></tr>
-      <tr data-rank="13" style="--c:#637939"><td class="rank">14</td><td class="team"><span class="sw"></span>SG Dickenschied</td><td class="power">47,5</td><td><span class="up">+0,6</span></td><td>5</td><td>1-0-4</td><td>5:15</td><td>-10</td></tr>
+      <tr data-rank="0" style="--c:#1f77b4"><td class="rank">1</td><td class="team"><span class="sw"></span>SV Strimmig</td><td class="power">53,7</td><td><span class="up">+1,8</span></td><td>5</td><td>4-1-0</td><td>15:3</td><td>+12</td><td class="tab">1<span class="flat">±0</span></td></tr>
+      <tr data-rank="1" style="--c:#d62728"><td class="rank">2</td><td class="team"><span class="sw"></span>TuS Kirchberg II</td><td class="power">53,3</td><td><span class="up">+0,4</span></td><td>5</td><td>3-2-0</td><td>15:2</td><td>+13</td><td class="tab">3<span class="up">+1</span></td></tr>
+      <tr data-rank="2" style="--c:#2ca02c"><td class="rank">3</td><td class="team"><span class="sw"></span>SG Rheinblick Oberwesel</td><td class="power">51,4</td><td><span class="up">+0,6</span></td><td>5</td><td>4-0-1</td><td>10:7</td><td>+3</td><td class="tab">2<span class="down">−1</span></td></tr>
+      <tr data-rank="3" style="--c:#ff7f0e"><td class="rank">4</td><td class="team"><span class="sw"></span>VfB Baybachhöhe</td><td class="power">50,7</td><td><span class="down">−0,6</span></td><td>4</td><td>2-1-1</td><td>7:4</td><td>+3</td><td class="tab">4<span class="flat">±0</span></td></tr>
+      <tr data-rank="4" style="--c:#9467bd"><td class="rank">5</td><td class="team"><span class="sw"></span>SC Weiler</td><td class="power">50,3</td><td><span class="up">+0,6</span></td><td>5</td><td>2-1-2</td><td>13:13</td><td>+0</td><td class="tab">6<span class="up">+1</span></td></tr>
+      <tr data-rank="5" style="--c:#8c564b"><td class="rank">6</td><td class="team"><span class="sw"></span>SG Vorderhunsrück Sabershausen</td><td class="power">50,0</td><td><span class="up">+0,2</span></td><td>5</td><td>1-3-1</td><td>6:8</td><td>-2</td><td class="tab">9<span class="up">+3</span></td></tr>
+      <tr data-rank="6" style="--c:#e377c2"><td class="rank">7</td><td class="team"><span class="sw"></span>SG Zell</td><td class="power">49,9</td><td><span class="up">+0,6</span></td><td>5</td><td>2-1-2</td><td>5:8</td><td>-3</td><td class="tab">7<span class="flat">±0</span></td></tr>
+      <tr data-rank="7" style="--c:#17becf"><td class="rank">8</td><td class="team"><span class="sw"></span>SV Blankenrath</td><td class="power">49,8</td><td><span class="up">+0,3</span></td><td>5</td><td>2-1-2</td><td>12:11</td><td>+1</td><td class="tab">5<span class="down">−3</span></td></tr>
+      <tr data-rank="8" style="--c:#bcbd22"><td class="rank">9</td><td class="team"><span class="sw"></span>TuS Rheinböllen</td><td class="power">49,7</td><td><span class="down">−0,3</span></td><td>4</td><td>1-1-2</td><td>5:4</td><td>+1</td><td class="tab">10<span class="up">+1</span></td></tr>
+      <tr data-rank="9" style="--c:#7f7f7f"><td class="rank">10</td><td class="team"><span class="sw"></span>SG Braunshorn</td><td class="power">49,4</td><td><span class="down">−0,7</span></td><td>5</td><td>2-0-3</td><td>8:8</td><td>+0</td><td class="tab">8<span class="down">−2</span></td></tr>
+      <tr data-rank="10" style="--c:#393b79"><td class="rank">11</td><td class="team"><span class="sw"></span>SSV Boppard</td><td class="power">48,5</td><td><span class="down">−0,8</span></td><td>5</td><td>1-1-3</td><td>5:9</td><td>-4</td><td class="tab">11<span class="flat">±0</span></td></tr>
+      <tr data-rank="11" style="--c:#b5651d"><td class="rank">12</td><td class="team"><span class="sw"></span>SG Bremm</td><td class="power">48,2</td><td><span class="down">−0,7</span></td><td>5</td><td>0-3-2</td><td>0:5</td><td>-5</td><td class="tab">13<span class="up">+1</span></td></tr>
+      <tr data-rank="12" style="--c:#5254a3"><td class="rank">13</td><td class="team"><span class="sw"></span>SG Werlau</td><td class="power">47,7</td><td><span class="down">−1,6</span></td><td>5</td><td>1-1-3</td><td>9:18</td><td>-9</td><td class="tab">12<span class="down">−1</span></td></tr>
+      <tr data-rank="13" style="--c:#637939"><td class="rank">14</td><td class="team"><span class="sw"></span>SG Dickenschied</td><td class="power">47,5</td><td><span class="up">+0,6</span></td><td>5</td><td>1-0-4</td><td>5:15</td><td>-10</td><td class="tab">14<span class="flat">±0</span></td></tr>
     </tbody>
   </table>
+  <p class="hint"><strong>Tabelle</strong> ist der offizielle Tabellenplatz; der Wert dahinter
+  ist die Differenz zum Platz in diesem Ranking. <span class="up">+2</span> heißt: hier zwei
+  Plätze besser als in der Tabelle, das Team hat also für seine Punkte die stärkeren Gegner
+  geschlagen oder deutlicher gewonnen. Die Spalte <strong>+/&minus;</strong> ist dagegen die
+  Veränderung des Power Scores gegenüber dem letzten Spieltag.</p>
 
   <h2>Verlauf</h2>
   <div class="chart"><svg viewBox="0 0 820 380" role="img" aria-label="Verlauf der Power Scores">
