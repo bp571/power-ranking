@@ -1,0 +1,12 @@
+# Scraped match data stays local: fussball.de's terms restrict systematic reuse
+# and the data is the DFB's. Only derived scores are published, in docs/.
+data/
+
+# Same reason: these are verbatim fussball.de pages and their font files, saved
+# as parser test fixtures. They stay local; tests/test_parse.py needs them.
+tests/fixtures/
+
+out/
+__pycache__/
+*.pyc
+.venv/
