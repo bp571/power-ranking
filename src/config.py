@@ -1,4 +1,5 @@
 import os
+import re
 
 STAFFEL_NAME = "Kreisliga A Hunsrück-Mosel"
 
@@ -15,6 +16,12 @@ STAFFEL_IDS = {
 }
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
+# Club crests, unlike the match rows, are committed: the page embeds them, so
+# they have to survive a fresh clone. Filled by src/logos.py.
+LOGO_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "logos")
+# fussball.de's getLogo endpoint sizes: 3=44px, 1=50px, 0=80px, 2=99px. 50px is
+# twice the display size, so the crest stays sharp without bloating the page.
+LOGO_FORMAT = 1
 MATCHES_CSV = os.path.join(os.path.dirname(__file__), "..", "data", "matches.csv")
 MANUAL_OVERRIDES_CSV = os.path.join(os.path.dirname(__file__), "..", "data", "manual_overrides.csv")
 
@@ -83,3 +90,12 @@ def matchday_url(season: str, matchday: int) -> str:
 
 def canonical_team(name: str) -> str:
     return TEAM_ALIASES.get(" ".join(name.split()), " ".join(name.split()))
+
+
+UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+
+
+def team_slug(name: str) -> str:
+    """Logo file name for a team. ASCII only, so the repo stays portable."""
+    slug = canonical_team(name).lower().translate(UMLAUTS)
+    return re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
