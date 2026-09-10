@@ -57,6 +57,14 @@ N0 = 20
 # nothing is known yet. Fixed, never min-max, so scores compare across matchdays.
 POWER_SCALE_DIVISOR = 3.0
 
+# Matchdays behind the form rating, the page's headline number. Five is short
+# enough to still be describing the present and long enough that one lucky
+# afternoon does not own the column. It is a display choice, not a fitted one:
+# no window this short can measure strength - against known true ratings the last
+# five matchdays correlate r = 0.25 with the truth, the last thirteen r = 0.36.
+# The form column describes what happened; the page says so in as many words.
+FORM_WINDOW = 5
+
 # Source spelling -> canonical name. fussball.de is consistent within a season,
 # so this only needs entries for spellings that differ between seasons.
 TEAM_ALIASES = {}

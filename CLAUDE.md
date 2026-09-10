@@ -4,10 +4,11 @@ Power ranking for the Kreisliga A Hunsrück-Mosel from fussball.de result data �
 26 matchdays, 182 matches per season. Live at
 [bp571.github.io/power-ranking](https://bp571.github.io/power-ranking/).
 
-It answers the one question the official table cannot: how strong is a team really, once you account
-for who they actually played? The table rewards points alone, so a team that beat the bottom four
-looks identical to one that beat the top four. This project rates teams from results instead, with
-strength of schedule, goal margin and home advantage in the number.
+It answers the one question the official table cannot: **who is playing well right now?** The table
+is a season-long ledger, so a side that started badly and has since turned it around still reads as
+a bottom-four team. The page leads with a form rating over the last five matchdays — opponent- and
+margin-aware, so it is not just points — and keeps the season-long power score beside it for
+context. The canonical case: SC Weiler finished 2025/26 tenth in the table and third in form.
 
 A one-person side project in Python. Simplicity beats sophistication: the ranking has to be
 explainable to a teammate in one sentence and to keep working with a few minutes of attention after
@@ -37,7 +38,7 @@ run.py
   ├─ save            upsert into data/matches.csv by match_id
   ├─ rating          replay chronologically -> Elo per team
   ├─ score           shrink + normalize -> power score 0-100
-  └─ report          docs/index.html
+  └─ report          + form over the last 5 matchdays -> docs/index.html
 ```
 
 - **A season is identified by its Staffel id, not by the URL slug** — to add one, take its id from
@@ -46,9 +47,9 @@ run.py
   matchdays; one that stays unavailable has to be filled in via `data/manual_overrides.csv`.
 - Goal counts and dates are obfuscated with per-request webfonts;
   [src/font_decoder.py](src/font_decoder.py) maps glyphs back to characters before parsing.
-- [src/config.py](src/config.py) holds everything tunable in one place: Staffel ids, K/HFA/N0, team
-  aliases, `KNOWN_TEAMS`. `rating.py` and `score.py` take these as defaults, so the backtest can
-  override them per call.
+- [src/config.py](src/config.py) holds everything tunable in one place: Staffel ids, K/HFA/N0,
+  `FORM_WINDOW`, team aliases, `KNOWN_TEAMS`. `rating.py`, `score.py` and `report.py` take these as
+  defaults, so the backtest can override them per call.
 
 **`data/matches.csv` is the contract**; the scraper is a replaceable adapter behind it. Columns:
 `match_id, season, matchday, date, home_team, away_team, home_goals, away_goals, status`
@@ -119,6 +120,22 @@ Three hypotheses about amateur football, measured on 2025/26 rather than assumed
   recency term. **Do not add recency weighting to the base rating.** A "Form" column describing what
   recently happened is fine; selling it as predictive is not.
 
+Two more, measured when the page was rebuilt around form:
+
+- **Teams drift within a season — direction visible, rate unmeasurable.** Hinrunde and Rückrunde
+  contain the *same 91 pairings*, so strength of schedule is controlled by construction and the
+  split-half correlation is a clean drift test. It has almost no power: simulated seasons ranging
+  from no drift to `corr(strength MD1, MD26) = 0.2` put the observed r = +0.084 between the 42nd
+  and 56th percentile, indistinguishable. A drifting state-space model agreed by failing the same
+  way — its likelihood was flat in the drift rate over the whole plausible range. **Do not try to
+  estimate a drift rate from one season.** The *ordering* is solid, though: the risers and fallers
+  the raw results show do come out in the right order, which is what the form window reports.
+- **A short window cannot measure current strength — it can only describe.** Simulating known true
+  strengths and rating from a trailing window only: last 4 matchdays r = 0.21 with the truth,
+  last 8 r = 0.28, last 13 r = 0.36, all 26 r = 0.47. Halving the window costs roughly half the
+  remaining signal. `FORM_WINDOW = 5` is chosen against that knowledge, not in ignorance of it,
+  and the page says outright that the column describes rather than predicts.
+
 Two methodological notes:
 
 - **RPS cannot identify `HFA`.** It enters as a constant offset that the calibration thresholds
@@ -131,18 +148,41 @@ Two methodological notes:
 ## The page
 
 [src/report.py](src/report.py) writes one self-contained `docs/index.html` — no external assets, no
-build step, no image files. Rank-sorted table (rank, team, power, change vs. previous matchday,
-matches played, record, goals, goal difference, official table position with its distance to the
-power rank), an inline-SVG progression chart where clicking a
-row highlights that team's line and greys the rest, and plain-language German text on what the
-number can and cannot do plus a source link.
+build step, no image files. Form-sorted table (rank, team with its last five results, form, change
+vs. previous matchday, season power score, matches played, record, goals, goal difference, official
+table position with its distance to the form rank), a full-width pitch laying the league out by
+form, one inline-SVG progression chart for the form window — clicking a row highlights that team in
+table, pitch and chart at once — and plain-language German text on what the number can and cannot
+do plus a source link.
+
+**The page is sorted by form, not by the power score.** The table already tells a reader who has
+the points; what it cannot tell them is that the team in twelfth has won four of five. That gap is
+the page's reason to exist, so `report.form_series()` — Elo over the last `FORM_WINDOW = 5`
+matchdays only, restarted from 1500 at every matchday — is the headline number, and the power
+score rides alongside in a quieter **Saison** column. The chip beside the official position is now
+the distance to the *form* rank: 2025/26 ends with SC Weiler tenth in the table and third in form.
+
+Two consequences that must not be undone by accident:
+
+- **The form rating gets no shrinkage** (`to_power()`, not `normalize_to_power_score()`). With
+  `N0 = 20` a five-match window keeps 5/25 of its deviation and the whole league collapses back
+  onto 50, which erases the column. The honesty lives in the wording instead — the page says
+  outright that five matches describe rather than measure.
+- **The window is hard, not a decay.** Down-weighting old matches instead — Elo with a bigger K,
+  or a drifting state-space filter, both tried and both removed — cannot go this short: reweighting
+  keeps every match in the estimate forever, so the effective memory stalls around nine matchdays
+  and the values leave the 0–100 scale before it gets shorter. Restarting from 1500 at each
+  matchday drops them outright, which is the only thing that produces a five-match view.
 
 - **The chart's y-axis follows the data but is snapped to a 5-point grid and never narrower than 15
   points.** Without that floor an early season, where the league sits inside three points, would be
   blown up to full height and fake movement that isn't there.
 - **A postponed match keeps its own matchday**, so playing it later corrects that matchday's point
-  in the chart, while the Elo replay stays in true chronological order — the same order
-  `run.rank()` uses, so table and chart cannot disagree.
+  in the chart, while the Elo replay stays in true chronological order.
+- **`run.rank()` delegates to `report.build_table()`** rather than replaying the season a second
+  time, so the terminal output and the published page are the same numbers in the same order by
+  construction. It prints form, season score, matches and the official position with its distance
+  to the form rank — the same columns the page leads with.
 
 ## Publishing
 
@@ -180,9 +220,16 @@ Considered and consciously left out:
   looks like an ordinary 0:2 in the schedule view, and the marker would need each match's detail
   page (~180 extra requests per season). 0:2/2:0 results are 7% of a season and only some are
   forfeits, so contamination is small. Revisit if a season shows unusually many.
-- **Attack/defense split** (Poisson/Dixon-Coles) and **rating uncertainty** (Glicko-2) — both more
-  informative than Elo, both needing roughly 2× the data or more parameters than one small league
-  can tune. v2 alternatives, separate models.
+- **Attack/defense split** (Poisson/Dixon-Coles) — more informative than Elo, but needs roughly 2×
+  the data. The lever for it is more Staffeln, not a bigger model: ten of them is ~1800 matches a
+  season and only costs another id in `STAFFEL_IDS`.
+- **A drifting state-space model** (Glicko-2 / Kalman) — built, measured, removed. It rates
+  strength as a hidden state with a random walk and reports an uncertainty band, which is the
+  principled way to ask "how strong now". Two findings killed it: the drift rate is unidentifiable
+  from one season (flat likelihood, see Evidence), and its memory cannot be pushed below ~9
+  matchdays, so it answered the season question a second time instead of the form question. RPS
+  was a tie with Elo throughout. **Do not rebuild it without new data** — more Staffeln would
+  change that calculus, a new season alone would not.
 
 **Not measurable from result data alone** — say so rather than faking it: match dominance
 independent of the scoreline (needs xG or shots), squad quality and injuries (needs lineups), red

@@ -9,11 +9,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from config import MANUAL_OVERRIDES_CSV, MATCHES_CSV, SEASON_CURRENT, STAFFEL_IDS  # noqa: E402
+from config import (  # noqa: E402
+    FORM_WINDOW,
+    MANUAL_OVERRIDES_CSV,
+    MATCHES_CSV,
+    SEASON_CURRENT,
+    STAFFEL_IDS,
+)
 from parse import collect_season, save_matches_csv, validate  # noqa: E402
-from rating import EloRating  # noqa: E402
-from report import write_report  # noqa: E402
-from score import normalize_to_power_score  # noqa: E402
+from report import build_table, write_report  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -50,32 +54,16 @@ def load_season(season: str):
 
 
 def rank(season: str):
-    """Replay the season chronologically and return the ranking."""
+    """The table the page shows, sorted by current form.
+
+    Built by report.build_table() rather than replayed a second time here, so the
+    terminal and docs/index.html cannot drift apart - they are the same numbers in
+    the same order.
+    """
     rows = [r for r in load_season(season) if r["status"] == "played"]
-    teams = sorted({r[side] for r in rows for side in ("home_team", "away_team")})
-
-    elo = EloRating()
-    elo.initialize_teams(teams)
-    for r in sorted(rows, key=lambda r: (r["date"], int(r["matchday"]))):
-        elo.update_from_match(
-            r["home_team"],
-            r["away_team"],
-            int(r["home_goals"]),
-            int(r["away_goals"]),
-            int(r["matchday"]),
-        )
-
-    ratings = elo.get_ratings()
-    table = [
-        {
-            "team": team,
-            "rating": ratings[team],
-            "matches": len(elo.rating_history[team]) - 1,
-            "power": normalize_to_power_score(ratings[team], len(elo.rating_history[team]) - 1),
-        }
-        for team in teams
-    ]
-    table.sort(key=lambda t: t["power"], reverse=True)
+    if not rows:
+        return []
+    table, _ = build_table(rows)
     return table
 
 
@@ -99,10 +87,14 @@ def main():
         logger.info(f"No played matches yet in {args.season} - nothing to rank.")
         return 0
 
-    print(f"\nPower Ranking {args.season}")
-    print(f"{'#':>3}  {'Team':<32}{'Power':>7}{'Elo':>8}{'Sp':>4}")
+    print(f"\nFormtabelle {args.season}  (letzte {FORM_WINDOW} Spieltage)")
+    print(f"{'#':>3}  {'Team':<32}{'Form':>7}{'Saison':>8}{'Sp':>4}{'Tab':>5}")
     for i, t in enumerate(table, 1):
-        print(f"{i:>3}. {t['team']:<32}{t['power']:>7.1f}{t['rating']:>8.0f}{t['matches']:>4}")
+        # Same chip as the page: how far the official table sits from this rank.
+        diff = t["position"] - i
+        note = f"  {diff:+d}" if diff else ""
+        print(f"{i:>3}. {t['team']:<32}{t['form']:>7.1f}{t['power']:>8.1f}"
+              f"{t['matches']:>4}{t['position']:>5}{note}")
 
     played = [r for r in load_season(args.season) if r["status"] == "played"]
     logger.info(f"Wrote {write_report(args.season, played)}")

@@ -13,15 +13,17 @@ from collections import defaultdict
 from datetime import date
 
 from config import (
+    FORM_WINDOW,
     LOGO_DIR,
     MATCHES_CSV,
     POWER_SCALE_DIVISOR,
+    R0,
     SEASON_CURRENT,
     STAFFEL_NAME,
     team_slug,
 )
 from rating import EloRating
-from score import normalize_to_power_score
+from score import clamp, normalize_to_power_score
 
 # docs/ is what GitHub Pages serves from the main branch, so the generated page
 # is the deploy - no build step, no workflow.
@@ -103,6 +105,54 @@ def replay(rows):
     return elo.get_ratings(), played, matchdays, series
 
 
+def to_power(rating):
+    """Elo points to the 0-100 scale, without the small-sample shrinkage.
+
+    The season column keeps the shrinkage (normalize_to_power_score); the form
+    column cannot. With N0 = 20 a five-match window would keep a fifth of its
+    deviation and the whole league would sit back on 50 - the column would show
+    nothing. Same divisor, so the two numbers stay on one scale and a row can be
+    read across.
+    """
+    return clamp(50 + (rating - R0) / POWER_SCALE_DIVISOR, 0, 100)
+
+
+def form_series(rows, matchdays, window=FORM_WINDOW):
+    """Elo over the last `window` matchdays only, recomputed for every matchday.
+
+    This is the page's headline number, and it is a *description* of a stretch of
+    football, not an estimate of strength. It answers the question the official
+    table cannot: this team is twelfth, but how are they playing right now?
+
+    A hard window, not a decay. Weighting old matches down instead - Elo with a
+    higher K, or a drifting state-space model - was tried and cannot go this
+    short: reweighting keeps every match in the estimate forever, so the
+    effective memory stalls around nine matchdays and the values run off the
+    0-100 scale before it gets shorter. Restarting from 1500 each matchday drops
+    the old matches outright, which is the only way to get a five-match view.
+
+    Elo rather than plain points because it matters *who* the five were against:
+    two sides can both take twelve of fifteen and belong in different places.
+    """
+    teams = sorted({r[side] for r in rows for side in ("home_team", "away_team")})
+    ordered = sorted(rows, key=lambda r: (r["date"], int(r["matchday"])))
+
+    series = {team: [] for team in teams}
+    for md in matchdays:
+        elo = EloRating()
+        elo.initialize_teams(teams)
+        for r in ordered:
+            if md - window < int(r["matchday"]) <= md:
+                elo.update_from_match(
+                    r["home_team"], r["away_team"],
+                    int(r["home_goals"]), int(r["away_goals"]), int(r["matchday"]),
+                )
+        ratings = elo.get_ratings()
+        for team in teams:
+            series[team].append(to_power(ratings[team]))
+    return series
+
+
 def team_stats(rows):
     """Record and goals per team, straight from the results."""
     stats = defaultdict(lambda: {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0})
@@ -160,37 +210,45 @@ def official_positions(stats):
 
 
 def build_table(rows):
+    """Ranked by current form, with the season power score alongside it.
+
+    Form leads because it is the one question the official table cannot answer -
+    a reader already knows who has collected the points. Power stays in the row
+    so the two readings sit side by side instead of competing for the headline.
+    """
     ratings, played, matchdays, series = replay(rows)
+    forms = form_series(rows, matchdays)
     stats = team_stats(rows)
     positions = official_positions(stats)
-    form = last5_form(rows)
+    dots = last5_form(rows)
 
     table = []
     for team, values in series.items():
-        power = values[-1]
-        previous = values[-2] if len(values) > 1 else None
+        f = forms[team]
         s = stats[team]
         table.append(
             {
                 "team": team,
-                "power": power,
-                "delta": None if previous is None else power - previous,
+                "form": f[-1],
+                "delta": None if len(f) < 2 else f[-1] - f[-2],
+                "power": values[-1],
                 "matches": played[team],
                 "record": (s["w"], s["d"], s["l"]),
-                "form": form[team],
+                "dots": dots[team],
                 "gf": s["gf"],
                 "ga": s["ga"],
                 "position": positions[team],
                 "series": values,
+                "fseries": f,
             }
         )
-    table.sort(key=lambda t: t["power"], reverse=True)
+    table.sort(key=lambda t: t["form"], reverse=True)
     return table, matchdays
 
 
-def y_axis(table):
+def y_axis(table, key="series"):
     """Snapped, minimum-width range covering every plotted value."""
-    values = [v for t in table for v in t["series"]]
+    values = [v for t in table for v in t[key]]
     lo = int(math.floor((min(values) - 1) / Y_GRID)) * Y_GRID
     hi = int(math.ceil((max(values) + 1) / Y_GRID)) * Y_GRID
     while hi - lo < Y_MIN_SPAN:
@@ -201,10 +259,24 @@ def y_axis(table):
     return lo, hi, step
 
 
+# The jersey outline, drawn once around its own centre so placing a token is a
+# translate: shoulders at -18, hem at 19, sleeves out to +-21. The crest sits on
+# a white patch on the chest, the rank badge on the lower right of the hem.
+JERSEY = (
+    "M-7,-18 L-13,-18 L-21,-10 L-15.5,-1 L-12,-5.5 L-12.5,19 "
+    "L12.5,19 L12,-5.5 L15.5,-1 L21,-10 L13,-18 L7,-18 "
+    "C6.5,-13 -6.5,-13 -7,-18 Z"
+)
+# The jersey is drawn at TOKEN_SCALE, so sleeve to sleeve is 42 * scale; the gap
+# leaves a little air before a token is pushed a lane up.
+TOKEN_SCALE = 1.25
+TOKEN_GAP = 62
+
+
 def hero_half_span(table):
     """Half-width of the pitch scale, snapped to the same 5-point grid, symmetric
     around the 50-point league average."""
-    half = max(abs(t["power"] - 50) for t in table)
+    half = max(abs(t["form"] - 50) for t in table)
     return max(int(math.ceil(half / Y_GRID)) * Y_GRID, Y_GRID)
 
 
@@ -221,89 +293,80 @@ def lanes(xs, min_gap, n=5):
     return out
 
 
-def svg_pitch(table):
-    """The league as a formation on a landscape pitch: one numbered token per
-    team along the long axis, right of the 50-point league average green, left
-    wine.
+def svg_pitch(table, logos):
+    """The league as a formation on a landscape pitch: one token per team along
+    the long axis, right of the 50-point league average green, left wine.
 
-    The number on the token is the rank, so a token can be traced straight into
-    the table beside it. All labelling is HTML around the drawing - SVG text
-    scaled down to a phone would shrink to a few pixels.
+    Every token is a jersey carrying the club crest, with the rank in a corner
+    badge so it can be traced straight into the table beside it; a team without
+    a crest wears the rank as its shirt number instead. All labelling is HTML
+    around the drawing - SVG text scaled down to a phone would shrink to a few
+    pixels.
     """
-    w, h = 860, 250
-    pad, cy, r = 10, 125, 20
+    w, h = 1600, 340
+    pad, cy = 12, 170
     half = hero_half_span(table)
     lo, hi = 50 - half, 50 + half
-    inner_l, inner_r = pad + 66, w - pad - 66
+    inner_l, inner_r = pad + 120, w - pad - 120
 
     def x(p):
         return inner_l + (inner_r - inner_l) * (p - lo) / (hi - lo)
 
     cx = x(50)
     p = [
-        f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="Alle {len(table)} Teams nach Power '
-        f'Score von {lo} links bis {hi} rechts; die Nummer im Kreis ist der Rang">'
+        f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="Alle {len(table)} Teams nach Form '
+        f'von {lo} links bis {hi} rechts; die Nummer am Trikot ist der Rang">'
     ]
     # Pitch markings - the frame the scale is read against, nothing else.
     p.append(
         f'<g class="pg">'
-        f'<rect x="{pad}" y="{pad}" width="{w - 2 * pad}" height="{h - 2 * pad}" rx="10"/>'
-        f'<rect x="{pad}" y="{cy - 62}" width="64" height="124"/>'
-        f'<rect x="{w - pad - 64}" y="{cy - 62}" width="64" height="124"/>'
-        f'<rect x="{pad}" y="{cy - 28}" width="22" height="56"/>'
-        f'<rect x="{w - pad - 22}" y="{cy - 28}" width="22" height="56"/>'
-        f'<circle cx="{cx:.1f}" cy="{cy}" r="44"/>'
+        f'<rect x="{pad}" y="{pad}" width="{w - 2 * pad}" height="{h - 2 * pad}" rx="12"/>'
+        f'<rect x="{pad}" y="{cy - 100}" width="104" height="200"/>'
+        f'<rect x="{w - pad - 104}" y="{cy - 100}" width="104" height="200"/>'
+        f'<rect x="{pad}" y="{cy - 46}" width="36" height="92"/>'
+        f'<rect x="{w - pad - 36}" y="{cy - 46}" width="36" height="92"/>'
+        f'<circle cx="{cx:.1f}" cy="{cy}" r="62"/>'
         f"</g>"
     )
     p.append(
-        f'<line class="axis" x1="{inner_l - 28}" y1="{cy}" x2="{inner_r + 28}" y2="{cy}"/>'
+        f'<line class="axis" x1="{inner_l - 40}" y1="{cy}" x2="{inner_r + 40}" y2="{cy}"/>'
     )
 
-    at = [x(t["power"]) for t in table]
-    lane = lanes(at, 2 * r + 4)
+    at = [x(t["form"]) for t in table]
+    lane = lanes(at, TOKEN_GAP)
     for i, t in enumerate(table):
-        dy = (0, -44, 44, -88, 88)[lane[i]]
-        cls = "pos" if t["power"] >= 50 else "neg"
+        dy = (0, -56, 56, -112, 112)[lane[i]]
+        cls = "pos" if t["form"] >= 50 else "neg"
+        crest = logos.get(team_slug(t["team"]))
+        if crest:
+            face = (
+                f'<circle class="in" cy="6.5" r="11.5"/>'
+                f'<image href="{crest}" x="-10" y="-3.5" width="20" height="20" '
+                f'preserveAspectRatio="xMidYMid meet"/>'
+                f'<circle class="rkb" cx="16" cy="16" r="8"/>'
+                f'<text class="rk" x="16" y="20">{i + 1}</text>'
+            )
+        else:
+            face = f'<text y="14">{i + 1}</text>'
         p.append(
-            f'<g class="ptok" data-rank="{i}">'
-            f'<circle class="{cls}" cx="{at[i]:.1f}" cy="{cy + dy}" r="{r}"/>'
-            f'<text x="{at[i]:.1f}" y="{cy + dy + 8}">{i + 1}</text>'
-            f"<title>{i + 1}. {html.escape(t['team'])} - {num(t['power'])}</title></g>"
+            f'<g class="ptok" data-rank="{i}" '
+            f'transform="translate({at[i]:.1f} {cy + dy}) scale({TOKEN_SCALE})">'
+            f'<path class="{cls}" d="{JERSEY}"/>'
+            f"{face}"
+            f"<title>{i + 1}. {html.escape(t['team'])} - {num(t['form'])}</title></g>"
         )
     p.append("</svg>")
     return "\n".join(p), lo, hi
 
 
-def svg_spark(values, y_min, y_max):
-    """Row-sized trajectory, drawn on the same scale as the big chart."""
-    w, h, pad = 58, 20, 3
-    span = max(len(values) - 1, 1)
-
-    def x(i):
-        return pad + (w - 2 * pad) * i / span
-
-    def y(v):
-        return (h - pad) - (h - 2 * pad) * (v - y_min) / (y_max - y_min)
-
-    pts = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(values))
-    base = ""
-    if y_min <= 50 <= y_max:
-        base = f'<line class="sb" x1="{pad}" y1="{y(50):.1f}" x2="{w - pad}" y2="{y(50):.1f}"/>'
-    cls = "pos" if values[-1] >= 50 else "neg"
-    return (
-        f'<svg class="spark {cls}" viewBox="0 0 {w} {h}" width="{w}" height="{h}" '
-        f'aria-hidden="true">{base}<polyline points="{pts}"/>'
-        f'<circle cx="{x(span):.1f}" cy="{y(values[-1]):.1f}" r="2.4"/></svg>'
-    )
-
-
-def svg_chart(table, matchdays):
+def svg_chart(table, matchdays, key="series", prefix="line"):
     """Inline SVG, one polyline per team, each ending in its rank token so a
     highlighted line can be named without looking anywhere else."""
     w, h = 900, 400
     left, right, top, bottom = 44, 34, 18, 36
+    tick_x = left - 8
     span = max(len(matchdays) - 1, 1)
-    y_min, y_max, y_step = y_axis(table)
+    y_min, y_max, y_step = y_axis(table, key)
 
     def x(i):
         return left + (w - left - right) * i / span
@@ -312,7 +375,8 @@ def svg_chart(table, matchdays):
         frac = (power - y_min) / (y_max - y_min)
         return h - bottom - (h - bottom - top) * frac
 
-    parts = [f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="Verlauf der Power Scores">']
+    label = "Formverlauf" if key == "fseries" else "Verlauf der Saisonwerte"
+    parts = [f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="{label} je Spieltag">']
 
     # Same reading direction as everywhere else: the half above 50 is green.
     if y_min <= 50 <= y_max:
@@ -327,7 +391,7 @@ def svg_chart(table, matchdays):
         parts.append(
             f'<line class="grid" x1="{left}" y1="{y(tick):.1f}" x2="{w - right}" '
             f'y2="{y(tick):.1f}"/>'
-            f'<text class="tick" x="{left - 8}" y="{y(tick) + 4:.1f}" '
+            f'<text class="tick" x="{tick_x}" y="{y(tick) + 4:.1f}" '
             f'text-anchor="end">{tick}</text>'
         )
     for i, md in enumerate(matchdays):
@@ -337,19 +401,19 @@ def svg_chart(table, matchdays):
                 f'text-anchor="middle">{md}</text>'
             )
     for rank, t in enumerate(table):
-        points = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(t["series"]))
+        values = t[key]
+        points = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(values))
         dots = "".join(
-            f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="3.2"/>'
-            for i, v in enumerate(t["series"])
+            f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="3.2"/>' for i, v in enumerate(values)
         )
-        ex, ey = x(len(t["series"]) - 1), y(t["series"][-1])
-        cls = "pos" if t["power"] >= 50 else "neg"
+        ex, ey = x(len(values) - 1), y(values[-1])
+        cls = "pos" if values[-1] >= 50 else "neg"
         end = (
             f'<g class="end"><circle class="{cls}" cx="{ex:.1f}" cy="{ey:.1f}" r="13"/>'
             f'<text x="{ex:.1f}" y="{ey + 4.6:.1f}">{rank + 1}</text></g>'
         )
         parts.append(
-            f'<g class="line" id="line{rank}" style="--c:{PALETTE[rank % len(PALETTE)]}">'
+            f'<g class="line" id="{prefix}{rank}" style="--c:{PALETTE[rank % len(PALETTE)]}">'
             f'<polyline points="{points}"/>{dots}{end}</g>'
         )
 
@@ -363,43 +427,45 @@ def render(season, rows):
     last_date = max(r["date"] for r in rows)
     last_date = ".".join(reversed(last_date.split("-")))
     generated = date.today().strftime("%d.%m.%Y")
-    y_min, y_max, _ = y_axis(table)
 
     top_team, bottom_team = table[0], table[-1]
-    range_pts = top_team["power"] - bottom_team["power"]
-    # The team whose power rank sits furthest from its official table position.
+    range_pts = top_team["form"] - bottom_team["form"]
+    # The team the table is most wrong about right now - the whole reason the
+    # page exists, so it gets named in the header.
     out_rank, out = max(enumerate(table), key=lambda p: abs(p[1]["position"] - (p[0] + 1)))
     out_diff = out["position"] - (out_rank + 1)
     plural = "Platz" if abs(out_diff) == 1 else "Plätze"
     if out_diff > 0:
-        out_note = f"{abs(out_diff)} {plural} besser als Tabellenplatz {out['position']}"
+        out_note = (f"Tabellenplatz {out['position']}, in Form aber {out_rank + 1}. – "
+                    f"{abs(out_diff)} {plural} besser als die Tabelle vermuten lässt")
     elif out_diff < 0:
-        out_note = f"{abs(out_diff)} {plural} schlechter als Tabellenplatz {out['position']}"
+        out_note = (f"Tabellenplatz {out['position']}, in Form aber nur {out_rank + 1}. – "
+                    f"{abs(out_diff)} {plural} schlechter als die Tabelle vermuten lässt")
     else:
-        out_note = "Ranking und Tabelle sind überall deckungsgleich"
+        out_note = "Form und Tabelle sind überall deckungsgleich"
     out_cls = "up" if out_diff > 0 else ("down" if out_diff < 0 else "flat")
 
-    pitch_svg, pitch_lo, pitch_hi = svg_pitch(table)
     logos = load_logos()
+    pitch_svg, pitch_lo, pitch_hi = svg_pitch(table, logos)
 
     body_rows = []
     for rank, t in enumerate(table):
         w, d, l = t["record"]
-        side = "pos" if t["power"] >= 50 else "neg"
+        side = "pos" if t["form"] >= 50 else "neg"
         if t["delta"] is None:
             delta = '<span class="flat">–</span>'
         else:
             sign = "+" if t["delta"] >= 0 else "−"
             cls = "up" if t["delta"] > 0.05 else ("down" if t["delta"] < -0.05 else "flat")
             delta = f'<span class="{cls}">{sign}{num(abs(t["delta"]))}</span>'
-        # Positive: the power ranking places the team higher than the table does.
+        # Positive: the team is playing better than its table place suggests.
         diff = t["position"] - (rank + 1)
         if diff == 0:
             gap = '<span class="chip flat">±0</span>'
         else:
             cls = "up" if diff > 0 else "down"
             gap = f'<span class="chip {cls}">{"+" if diff > 0 else "−"}{abs(diff)}</span>'
-        segs = "".join(f'<i class="{r}"></i>' for r in t["form"])
+        segs = "".join(f'<i class="{r}"></i>' for r in t["dots"])
         tok = f'<span class="tok {side}">{rank + 1}</span>'
         crest = logos.get(team_slug(t["team"]))
         crest = f'<img class="lg" src="{crest}" alt="">' if crest else ""
@@ -412,9 +478,9 @@ def render(season, rows):
             f'<span class="tn">{html.escape(t["team"])}</span>'
             f'<span class="form"><span class="seg" aria-hidden="true">{segs}</span>'
             f'<span class="rt">{w}-{d}-{l}</span></span></div></div></td>'
-            f'<td class="power"><div class="pw"><b>{num(t["power"])}</b></div></td>'
-            f'<td class="s-hide spk">{svg_spark(t["series"], y_min, y_max)}</td>'
+            f'<td class="power"><div class="pw"><b>{num(t["form"])}</b></div></td>'
             f"<td>{delta}</td>"
+            f'<td class="power season">{num(t["power"])}</td>'
             f"<td class=\"s-hide\">{t['matches']}</td>"
             f"<td class=\"s-hide\">{t['gf']}:{t['ga']}</td>"
             f"<td class=\"s-hide\">{t['gf'] - t['ga']:+d}</td>"
@@ -489,8 +555,12 @@ def render(season, rows):
                 background:var(--slate); border-radius:2px; }}
   .sub {{ color:var(--muted); font-size:13.5px; margin:-2px 0 12px; max-width:64ch; }}
 
-  /* The dashboard: table on the left, pitch and chart on the right, so that
-     clicking a team is visible in all three at once. */
+  /* The pitch runs across the full page width - it is the one view that shows
+     the whole league at once, and the tokens need the room. */
+  .pitchsec {{ margin:0 0 30px; }}
+
+  /* The dashboard below it: table on the left, the form chart on the right, so
+     that clicking a team is visible in all three at once. */
   .dash {{ display:grid; grid-template-columns:1fr; gap:26px; align-items:start; }}
   .col section + section {{ margin-top:22px; }}
 
@@ -516,14 +586,6 @@ def render(season, rows):
   .tn {{ display:block; font-weight:600; }}
   .form {{ display:flex; align-items:center; gap:7px; margin-top:3px; }}
   .pw b {{ font-size:17px; font-weight:700; }}
-
-  td.spk {{ width:64px; }}
-  .spark {{ display:block; width:58px; height:20px; }}
-  .spark .sb {{ stroke:#ccd4da; stroke-width:1; stroke-dasharray:2 3; }}
-  .spark polyline {{ fill:none; stroke-width:1.8; stroke-linejoin:round;
-                     stroke-linecap:round; }}
-  .spark.pos polyline {{ stroke:var(--up); }} .spark.pos circle {{ fill:var(--up); }}
-  .spark.neg polyline {{ stroke:var(--down); }} .spark.neg circle {{ fill:var(--down); }}
 
   .seg {{ display:flex; gap:4px; flex:0 0 auto; align-items:center; }}
   .seg i {{ width:7px; height:7px; border-radius:50%; flex:0 0 auto; }}
@@ -554,11 +616,16 @@ def render(season, rows):
   .pg rect, .pg circle {{ fill:none; stroke:rgba(255,255,255,.15); stroke-width:1.4; }}
   .axis {{ stroke:rgba(255,255,255,.17); stroke-width:1; stroke-dasharray:3 4; }}
   .ptok {{ cursor:pointer; }}
-  .ptok circle {{ stroke:var(--slate); stroke-width:2.5; }}
-  .ptok circle.pos {{ fill:var(--up-l); }}
-  .ptok circle.neg {{ fill:var(--down-l); }}
+  .ptok path {{ stroke:var(--slate); stroke-width:2.5; stroke-linejoin:round; }}
+  .ptok path.pos {{ fill:var(--up-l); }}
+  .ptok path.neg {{ fill:var(--down-l); }}
+  /* The crest sits on a white chest patch, so the shirt colour still reads as
+     the above/below-average marker the legend explains. */
+  .ptok circle.in {{ fill:#fff; }}
+  .ptok circle.rkb {{ fill:var(--slate); stroke:#fff; stroke-width:1.5; }}
   .ptok text {{ fill:var(--slate); font-size:23px; font-weight:700; text-anchor:middle; }}
-  .ptok.sel circle {{ stroke:#fff; stroke-width:3.5; }}
+  .ptok text.rk {{ fill:#fff; font-size:12px; }}
+  .ptok.sel path {{ stroke:#fff; stroke-width:3.5; }}
   .pends {{ display:flex; justify-content:space-between; gap:12px; margin:0 0 6px; }}
   .pend {{ display:flex; align-items:center; gap:7px; margin:0;
            color:var(--on-slate); font-size:12px; }}
@@ -586,6 +653,8 @@ def render(season, rows):
   .end circle.pos {{ fill:var(--up); }}
   .end circle.neg {{ fill:var(--down); }}
   .end text {{ fill:#fff; font-size:13px; font-weight:700; text-anchor:middle; }}
+  /* The season score is context, not the headline: same column width, quieter. */
+  td.season {{ color:var(--muted); font-weight:600; }}
 
   .scale {{ margin:20px 0 22px; max-width:64ch; }}
   .scale .track {{ position:relative; height:12px; border-radius:99px;
@@ -610,12 +679,12 @@ def render(season, rows):
 
   /* Two columns as soon as the table fits next to the pitch without scrolling. */
   @media (min-width:1400px) {{
-    .dash {{ grid-template-columns:minmax(0,1.12fr) minmax(0,1fr); gap:28px; }}
+    .dash {{ grid-template-columns:minmax(0,44fr) minmax(0,56fr); gap:28px; }}
     .cells {{ flex:2 1 640px; }}
   }}
   @media (max-width:1399px) {{
     /* Stacked: keep one comfortable measure instead of stretching to 1760px. */
-    .dash {{ max-width:1080px; margin:0 auto; }}
+    .dash, .pitchsec {{ max-width:1080px; margin-left:auto; margin-right:auto; }}
   }}
   @media (max-width:700px) {{
     .s-hide {{ display:none; }}
@@ -628,6 +697,13 @@ def render(season, rows):
     th:last-child, td:last-child {{ padding-right:10px; }}
     td.rank {{ width:38px; }}
     td.team {{ min-width:0; }}
+    /* Six columns is already a lot on a phone: the season score is the one that
+       can go, the form number and the table place carry the message. */
+    td.season, th.season {{ display:none; }}
+    /* Squeezed into a phone the full-width pitch would shrink the jerseys to a
+       few pixels, so it keeps a readable width and scrolls sideways instead. */
+    .pwrap {{ overflow-x:auto; }}
+    .pwrap svg {{ min-width:700px; }}
     .tc {{ gap:7px; }}
     .lg {{ width:22px; height:22px; }}
     .tok {{ width:23px; height:23px; font-size:12px; }}
@@ -643,8 +719,8 @@ def render(season, rows):
       <div class="brand">
         <p class="league">{html.escape(STAFFEL_NAME)} · Saison {season}</p>
         <h1>Power Ranking</h1>
-        <p class="tag">Wie stark ein Team wirklich ist – gemessen daran, gegen wen es
-        gespielt hat und wie deutlich.</p>
+        <p class="tag">Wer gerade gut spielt – gemessen an den letzten fünf Spieltagen und
+        daran, gegen wen. Die Tabelle zeigt die Saison, diese Seite den Moment.</p>
       </div>
       <div class="md">
         <span class="k">Spieltag</span>
@@ -653,13 +729,13 @@ def render(season, rows):
       </div>
       <div class="cells">
         <div class="cell">
-          <span class="k">Spitzenreiter</span>
+          <span class="k">Beste Form</span>
           <span class="v sm">{html.escape(top_team["team"])}</span>
-          <span class="s">Power {num(top_team["power"])} · Tabellenplatz
+          <span class="s">Form {num(top_team["form"])} · Tabellenplatz
           {top_team["position"]}</span>
         </div>
         <div class="cell">
-          <span class="k">Größter Unterschied zur Tabelle</span>
+          <span class="k">Die Tabelle täuscht am meisten bei</span>
           <span class="v sm {out_cls}">{html.escape(out["team"])}</span>
           <span class="s">{out_note}</span>
         </div>
@@ -668,16 +744,32 @@ def render(season, rows):
   </div>
 </header>
 <main class="wrap">
+  <section class="pitchsec">
+    <h2>Aufstellung</h2>
+    <p class="sub">Ein Trikot je Team, aufgestellt nach der aktuellen Form.
+    <strong>Die Nummer am Trikot ist der Platz in der Formtabelle.</strong></p>
+    <div class="pitchcol">
+      <div class="pends">
+        <p class="pend"><i class="neg"></i>schwächer<b>{pitch_lo}</b></p>
+        <p class="pend"><b>{pitch_hi}</b>stärker<i class="pos"></i></p>
+      </div>
+      <div class="pwrap">{pitch_svg}</div>
+      <p class="phead">Links liegen die Teams unter dem Ligadurchschnitt, rechts davon die
+      darüber. Ein Trikot antippen hebt das Team überall hervor.</p>
+    </div>
+  </section>
+
   <div class="dash">
     <div class="col">
       <section>
-        <h2>Rangliste</h2>
+        <h2>Formtabelle</h2>
+        <p class="sub">Sortiert nach den letzten fünf Spieltagen, nicht nach der Saison.</p>
         <div class="card rank">
           <table>
             <thead>
               <tr>
-                <th>#</th><th class="l">Team · S-U-N</th><th class="l">Power</th>
-                <th class="s-hide">Verlauf</th><th>+/&minus;</th>
+                <th>#</th><th class="l">Team · S-U-N</th><th class="l">Form</th>
+                <th>+/&minus;</th><th class="l season">Saison</th>
                 <th class="s-hide">Sp</th><th class="s-hide">Tore</th>
                 <th class="s-hide">Diff</th><th>Tabelle</th>
               </tr>
@@ -687,75 +779,67 @@ def render(season, rows):
             </tbody>
           </table>
         </div>
-        <p class="hint"><strong>Tabelle</strong> ist der offizielle Tabellenplatz; der Wert
-        dahinter ist die Differenz zum Platz in diesem Ranking. <span class="chip up">+2</span>
-        heißt: hier zwei Plätze besser als in der Tabelle, das Team hat also für seine Punkte
-        die stärkeren Gegner geschlagen oder deutlicher gewonnen. <strong>+/&minus;</strong> ist
-        dagegen die Veränderung gegenüber dem letzten Spieltag. Die Punkte unter dem Teamnamen
-        sind die letzten fünf Spiele, chronologisch von links nach rechts: grün Sieg, grau
-        Unentschieden, rot Niederlage.</p>
+        <p class="hint"><strong>Form</strong> rechnet nur die letzten fünf Spieltage, dafür mit
+        Gegnerstärke und Torverhältnis: 50 ist Ligadurchschnitt, darüber heißt besser als der
+        Schnitt. <strong>Saison</strong> daneben ist der Wert über alle bisherigen Spiele – wer
+        dort hoch steht und in der Form tief, hat eine gute Saison, aber gerade eine schwache
+        Phase. <strong>Tabelle</strong> ist der offizielle Platz; der Wert dahinter ist die
+        Differenz zum Platz in dieser Formtabelle. <span class="chip up">+2</span> heißt: hier
+        zwei Plätze besser als in der Tabelle, das Team spielt gerade also über seinem
+        Saisonstand. <strong>+/&minus;</strong> ist die Veränderung der Form gegenüber dem
+        letzten Spieltag. Die Punkte unter dem Teamnamen sind dieselben fünf Spiele, chronologisch
+        von links nach rechts: grün Sieg, grau Unentschieden, rot Niederlage.</p>
       </section>
     </div>
 
     <div class="col">
       <section>
-        <h2>Aufstellung</h2>
-        <p class="sub">Ein Trikot je Team, aufgestellt nach Power Score.
-        <strong>Die Nummer ist der Platz in der Rangliste.</strong></p>
-        <div class="pitchcol">
-          <div class="pends">
-            <p class="pend"><i class="neg"></i>schwächer<b>{pitch_lo}</b></p>
-            <p class="pend"><b>{pitch_hi}</b>stärker<i class="pos"></i></p>
-          </div>
-          <div class="pwrap">{pitch_svg}</div>
-          <p class="phead">Links liegen die Teams unter dem Ligadurchschnitt, rechts davon die
-          darüber. Ein Trikot antippen hebt das Team überall hervor.</p>
-        </div>
-      </section>
-
-      <section>
-        <h2>Verlauf</h2>
-        <p class="sub">Power Score über alle bisherigen Spieltage. Die Nummer am Ende einer
-        Linie ist wieder der Rang.</p>
-        <div class="card chart">{svg_chart(table, matchdays)}</div>
-        <p class="hint">X-Achse: Spieltag, Y-Achse: Power Score. Achtung beim Vergleich mit
-        früheren Wochen: die Y-Achse passt sich dem aktuellen Wertebereich an.</p>
+        <h2>Formverlauf</h2>
+        <p class="sub">Die Form an jedem Spieltag, also immer das Fenster der fünf davor.
+        Diese Linien springen – das ist gewollt, sie zeigen Phasen und keine Bilanz.</p>
+        <div class="card chart">{svg_chart(table, matchdays, "fseries", "form")}</div>
+        <p class="hint">X-Achse: Spieltag, Y-Achse: Form. Eine Zeile in der Tabelle antippen
+        hebt das Team hier und in der Aufstellung hervor.</p>
       </section>
     </div>
   </div>
 
   <div class="below">
   <h2>Was die Zahl kann – und was nicht</h2>
-  <div class="note"><p><strong>Dieses Ranking sagt Spiele nicht besser voraus als die
-  Tabelle.</strong> Das wurde an der kompletten Vorsaison nachgerechnet: Vorhersagen aus dem
-  Power Score sind statistisch genauso gut wie Vorhersagen aus dem Tabellenplatz, der
-  Unterschied ist reines Rauschen. Das ist auch zu erwarten – bei 14 Teams spielt jeder gegen
-  jeden zweimal, damit hat am Ende niemand einen leichteren Spielplan gehabt. Der Power Score
-  ist ein <em>anderer Blick</em> auf dieselbe Saison, keine Glaskugel.</p></div>
+  <div class="note"><p><strong>Die Form beschreibt, sie sagt nichts vorher.</strong> Fünf Spiele
+  sind viel zu wenig, um zu messen, wie stark ein Team wirklich ist – nachgerechnet an
+  simulierten Saisons trifft ein Fenster dieser Länge die tatsächliche Stärke nur schwach. Wer
+  hier oben steht, hat die letzten fünf Spieltage gut gespielt. Ob er sie auch nächste Woche gut
+  spielt, steht hier nicht, und aus diesen Daten lässt es sich auch nicht sagen.</p></div>
 
   <div class="prose">
-  <p>Zwei Dinge, die man beim Lesen wissen sollte:</p>
-  <p><strong>Am Saisonanfang liegt alles eng beieinander.</strong> Nach fünf Spieltagen steht
-  die ganze Liga in einem Bereich von wenigen Punkten um die 50. Das ist kein Fehler, sondern
-  die ehrliche Antwort: So früh weiß man schlicht noch nicht, wer besser ist. Erst mit mehr
-  Spielen zieht sich das Feld auseinander.</p>
+  <p>Drei Dinge, die man beim Lesen wissen sollte:</p>
+  <p><strong>Die Form schwankt stark – das ist Absicht.</strong> Ein Team kann binnen zwei
+  Spieltagen zehn Punkte gewinnen oder verlieren. Genau dafür ist die Spalte da: Sie soll zeigen,
+  wer <em>gerade</em> läuft, und nicht den Saisonschnitt wiederholen. Wer den ruhigen Blick will,
+  liest die Spalte <strong>Saison</strong> daneben oder gleich die offizielle Tabelle.</p>
+  <p><strong>Ein großer Teil davon ist Zufall.</strong> Bei fünf Spielen entscheidet ein
+  abgefälschter Ball über mehrere Punkte in dieser Wertung. Zwei Teams, die eng beieinander
+  liegen, sind praktisch nicht zu unterscheiden – erst deutliche Abstände über mehrere Spieltage
+  bedeuten etwas.</p>
   </div>
 
   <figure class="scale">
-    <div class="track"><span class="occ" style="left:{bottom_team["power"]:.1f}%; width:{max(range_pts, 0.8):.1f}%"></span><span class="mid"></span></div>
+    <div class="track"><span class="occ" style="left:{bottom_team["form"]:.1f}%; width:{max(range_pts, 0.8):.1f}%"></span><span class="mid"></span></div>
     <div class="ends">
       <span>0</span>
-      <span>Die ganze Liga: <b>{num(bottom_team["power"])} – {num(top_team["power"])}</b></span>
+      <span>Die ganze Liga in Form: <b>{num(bottom_team["form"])} – {num(top_team["form"])}</b></span>
       <span>100</span>
     </div>
   </figure>
 
   <div class="prose">
-  <p><strong>Ein großer Teil des Abstands ist Zufall.</strong> In dieser Liga enden 28,6 % der
-  Spiele mit drei oder mehr Toren Unterschied. Eine Simulation mit 14 exakt gleich starken
-  Teams erzeugt allein durch Glück rund die Hälfte der Streuung, die real zu sehen ist.
-  Deshalb werden die Werte bewusst zur Mitte hin gedämpft – kleine Unterschiede in der Tabelle
-  bedeuten wenig.</p>
+  <p><strong>Warum die Liga in dieser Wertung so weit auseinanderzieht.</strong> In dieser Liga
+  enden 28,6 % der Spiele mit drei oder mehr Toren Unterschied – eine Simulation mit 14 exakt
+  gleich starken Teams erzeugt allein durch Glück rund die Hälfte der Streuung, die real zu
+  sehen ist. Über eine ganze Saison mittelt sich das weitgehend heraus, und die Spalte
+  <em>Saison</em> dämpft zusätzlich zur Mitte hin. Über fünf Spiele passiert beides nicht: Die
+  Form zeigt die Ausschläge, wie sie sind.</p>
 
   <h2>Wie gerechnet wird</h2>
   <p>Ein Elo-System, wie man es vom Schach kennt: Jedes Team startet bei 1500 Punkten, nach
@@ -765,6 +849,18 @@ def render(season, rows):
   geschätzt). Am Ende wird das Rating auf eine Skala von 0 bis 100 umgelegt, mit
   {num(POWER_SCALE_DIVISOR)} Elo-Punkten je Power-Punkt. Nur ausgetragene Spiele zählen;
   ungleiche Spielanzahl ist deshalb kein Problem.</p>
+
+  <p><strong>Die Form rechnet genauso – nur mit kurzem Gedächtnis.</strong> Für die Spalte
+  <em>Form</em> läuft dieselbe Elo-Rechnung, aber jeder Spieltag beginnt wieder bei 1500 und es
+  zählen nur die letzten fünf Spieltage. Alles davor wird nicht schwächer gewichtet, sondern
+  fällt ganz heraus. Genau das macht den Unterschied zur Spalte <em>Saison</em>: Dort hängt einem
+  Team eine schwache Hinrunde bis zum letzten Spieltag an, hier ist sie nach fünf Spieltagen
+  weg. Weil das Fenster so kurz ist, wird der Wert auch nicht zur Mitte hin gedämpft – sonst
+  stünde die ganze Liga wieder bei 50 und die Spalte wäre sinnlos.</p>
+
+  <p>Warum überhaupt rechnen und nicht einfach Punkte aus fünf Spielen zählen? Weil es einen
+  Unterschied macht, gegen wen. Zwei Teams können beide zwölf von fünfzehn Punkten geholt
+  haben – wer sie gegen die Spitze geholt hat, steht hier vorn.</p>
   </div>
 
   <footer>
@@ -777,16 +873,15 @@ def render(season, rows):
 <script>
   const rows = [...document.querySelectorAll('tbody tr[data-rank]')];
   const tokens = [...document.querySelectorAll('.ptok')];
-  const svg = document.querySelector('.chart svg');
   const selected = new Set(['0', '1', '2']);
 
   function apply() {{
     rows.forEach(tr => {{
       const on = selected.has(tr.dataset.rank);
-      const line = document.getElementById('line' + tr.dataset.rank);
       tr.classList.toggle('sel', on);
+      const line = document.getElementById('form' + tr.dataset.rank);
       line.classList.toggle('sel', on);
-      if (on) svg.appendChild(line);   // draw highlighted lines on top
+      if (on) line.parentNode.appendChild(line);     // draw highlighted lines on top
     }});
     tokens.forEach(g => g.classList.toggle('sel', selected.has(g.dataset.rank)));
   }}
