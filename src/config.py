@@ -19,6 +19,10 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
 # Club crests, unlike the match rows, are committed: the page embeds them, so
 # they have to survive a fresh clone. Filled by src/logos.py.
 LOGO_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "logos")
+# Same reason as the crests: the page embeds the webfonts as data URIs so it
+# stays one self-contained file with no external requests. Both are OFL, the
+# licences sit next to the files.
+FONT_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "fonts")
 # fussball.de's getLogo endpoint sizes: 3=44px, 1=50px, 0=80px, 2=99px. 50px is
 # twice the display size, so the crest stays sharp without bloating the page.
 LOGO_FORMAT = 1

@@ -191,8 +191,13 @@ build step, no image files. Form-sorted table (rank, team with its last five res
 vs. previous matchday, season power score, matches played, record, goals, goal difference, official
 table position with its distance to the form rank), a full-width pitch laying the league out by
 form, one inline-SVG progression chart for the form window — clicking a row highlights that team in
-table, pitch and chart at once — then the next matchday's forecast, the predictor table behind it,
-and plain-language German text on what the number can and cannot do plus a source link.
+table, pitch and chart at once — then the next matchday's forecast and the predictor table behind
+it, side by side in the same grid, and a source link.
+
+**Every explanation sits with the thing it explains.** The page carries no essay at the end: the
+legend for the form table, the notes under the forecast and the note under the predictor table are
+all the prose there is, and each one is next to its own table. The one sentence that cannot be
+dropped is the disclaimer in the form table's subline — five matches describe, they do not predict.
 
 **The page is sorted by form, not by the power score.** The table already tells a reader who has
 the points; what it cannot tell them is that the team in twelfth has won four of five. That gap is
@@ -213,8 +218,8 @@ Two consequences that must not be undone by accident:
 
 - **The form rating gets no shrinkage** (`to_power()`, not `normalize_to_power_score()`). With
   `N0 = 20` a five-match window keeps 5/25 of its deviation and the whole league collapses back
-  onto 50, which erases the column. The honesty lives in the wording instead — the page says
-  outright that five matches describe rather than measure.
+  onto 50, which erases the column. The honesty lives in the wording instead — the form table's
+  own subline says outright that five matches describe rather than measure.
 - **The window is hard, not a decay.** Down-weighting old matches instead — Elo with a bigger K,
   or a drifting state-space filter, both tried and both removed — cannot go this short: reweighting
   keeps every match in the estimate forever, so the effective memory stalls around nine matchdays

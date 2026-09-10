@@ -12,6 +12,7 @@ from collections import defaultdict
 from datetime import date
 
 from config import (
+    FONT_DIR,
     FORM_WINDOW,
     LOGO_DIR,
     POWER_SCALE_DIVISOR,
@@ -65,12 +66,67 @@ def load_logos():
     return logos
 
 
+def font_face(family, filename, weights):
+    """One @font-face with the woff2 inlined, so the page makes no external
+    request. Both files are the variable Latin cut Google Fonts serves, which
+    covers German umlauts, the en dash and the minus sign the page uses."""
+    path = os.path.join(FONT_DIR, filename)
+    if not os.path.isfile(path):
+        return ""
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("ascii")
+    return (
+        "@font-face{font-family:'%s';font-style:normal;font-weight:%s;"
+        "font-display:swap;src:url(data:font/woff2;base64,%s) format('woff2');}"
+        % (family, weights, encoded)
+    )
+
+
+def stroke(path):
+    """One highlighter stroke as a background image: a wobbling outline filled
+    with a gradient, so both the shape and the pressure are uneven. Stretched to
+    whatever box it is given - a blob has no aspect ratio to preserve."""
+    return (
+        "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+        "viewBox='0 0 200 40' preserveAspectRatio='none'%3E%3Cdefs%3E"
+        "%3ClinearGradient id='g' x1='0' x2='1'%3E"
+        "%3Cstop offset='0' stop-color='%23face3a' stop-opacity='.07'/%3E"
+        "%3Cstop offset='.05' stop-color='%23face3a' stop-opacity='.44'/%3E"
+        "%3Cstop offset='.34' stop-color='%23face3a' stop-opacity='.25'/%3E"
+        "%3Cstop offset='.61' stop-color='%23face3a' stop-opacity='.42'/%3E"
+        "%3Cstop offset='.87' stop-color='%23face3a' stop-opacity='.22'/%3E"
+        "%3Cstop offset='1' stop-color='%23face3a' stop-opacity='0'/%3E"
+        "%3C/linearGradient%3E%3C/defs%3E"
+        f"%3Cpath d='{path}' fill='url(%23g)'/%3E%3C/svg%3E\")"
+    )
+
+
+STROKE_A = stroke("M1,9 C26,2 58,13 92,6 C128,0 163,10 199,3 "
+                  "L198,31 C170,38 132,27 96,34 C62,40 27,30 2,37 Z")
+STROKE_B = stroke("M2,13 C34,5 66,17 100,10 C134,3 168,13 198,5 "
+                  "L197,29 C166,36 130,25 98,32 C64,38 30,28 3,36 Z")
+
+# The pen stroke that ties a written note to the number it is about: a curve
+# and a two-line head, drawn open so it reads as ink rather than as an icon.
+ARROW = (
+    '<svg class="arw" viewBox="0 0 48 22" aria-hidden="true">'
+    '<path d="M1.5,16.5 C9,18.5 22,16.5 32,9"/>'
+    '<path d="M25.5,5.5 L33.5,7.8 L29.5,14.5"/>'
+    "</svg>"
+)
+
 WEEKDAYS = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 
 
 def short_date(iso):
     d = date.fromisoformat(iso)
     return f"{WEEKDAYS[d.weekday()]} {d.day:02d}.{d.month:02d}."
+
+
+def signed(n):
+    """Typographic minus, so the goal difference matches the form change column
+    instead of setting a hyphen next to it."""
+    return f"+{n}" if n >= 0 else f"&minus;{abs(n)}"
 
 
 def pct(x):
@@ -279,6 +335,8 @@ JERSEY = (
 # leaves a little air before a token is pushed a lane up.
 TOKEN_SCALE = 1.25
 TOKEN_GAP = 62
+# Vertical offset per beeswarm lane, middle outwards.
+LANE_OFFSETS = (0, -52, 52, -104, 104)
 
 
 def hero_half_span(table):
@@ -311,14 +369,24 @@ def svg_pitch(table, logos):
     around the drawing - SVG text scaled down to a phone would shrink to a few
     pixels.
     """
-    w, h = 1600, 340
-    pad, cy = 12, 170
+    w, pad = 1600, 12
     half = hero_half_span(table)
     lo, hi = 50 - half, 50 + half
     inner_l, inner_r = pad + 120, w - pad - 120
 
     def x(p):
         return inner_l + (inner_r - inner_l) * (p - lo) / (hi - lo)
+
+    at = [x(t["form"]) for t in table]
+    lane = lanes(at, TOKEN_GAP)
+    # The pitch is only as deep as the beeswarm actually got. Drawn at a fixed
+    # depth it left a third of the grass empty above and below the tokens, which
+    # reads as missing teams rather than as a tightly packed league.
+    used = max(abs(LANE_OFFSETS[k]) for k in lane)
+    h = 2 * (used + 78)
+    cy = h // 2
+    box_h = min(192, h - 2 * pad - 16)
+    goal_h = box_h * 0.46
 
     cx = x(50)
     p = [
@@ -328,22 +396,30 @@ def svg_pitch(table, logos):
     # Pitch markings - the frame the scale is read against, nothing else.
     p.append(
         f'<g class="pg">'
-        f'<rect x="{pad}" y="{pad}" width="{w - 2 * pad}" height="{h - 2 * pad}" rx="12"/>'
-        f'<rect x="{pad}" y="{cy - 100}" width="104" height="200"/>'
-        f'<rect x="{w - pad - 104}" y="{cy - 100}" width="104" height="200"/>'
-        f'<rect x="{pad}" y="{cy - 46}" width="36" height="92"/>'
-        f'<rect x="{w - pad - 36}" y="{cy - 46}" width="36" height="92"/>'
-        f'<circle cx="{cx:.1f}" cy="{cy}" r="62"/>'
+        f'<rect x="{pad}" y="{pad}" width="{w - 2 * pad}" height="{h - 2 * pad}" rx="3"/>'
+        f'<rect x="{pad}" y="{cy - box_h / 2:.1f}" width="104" height="{box_h}"/>'
+        f'<rect x="{w - pad - 104}" y="{cy - box_h / 2:.1f}" width="104" height="{box_h}"/>'
+        f'<rect x="{pad}" y="{cy - goal_h / 2:.1f}" width="36" height="{goal_h:.1f}"/>'
+        f'<rect x="{w - pad - 36}" y="{cy - goal_h / 2:.1f}" width="36" height="{goal_h:.1f}"/>'
+        f'<circle cx="{cx:.1f}" cy="{cy}" r="{min(58, box_h / 2.6):.1f}"/>'
         f"</g>"
     )
+    # The halfway line is the league average, and it is the one reference the
+    # whole drawing is read against - drawn solid, not implied by the circle.
     p.append(
+        f'<line class="half" x1="{cx:.1f}" y1="{pad}" x2="{cx:.1f}" y2="{h - pad}"/>'
         f'<line class="axis" x1="{inner_l - 40}" y1="{cy}" x2="{inner_r + 40}" y2="{cy}"/>'
     )
+    # A chalk mark every five points, so a jersey's distance from the middle can
+    # be counted off instead of only compared. Labelled in HTML at the ends -
+    # SVG text scaled to a phone would be a few pixels tall.
+    for v in range(lo, hi + 1, Y_GRID):
+        if v != 50:
+            p.append(f'<line class="stick" x1="{x(v):.1f}" y1="{cy - 7}" '
+                     f'x2="{x(v):.1f}" y2="{cy + 7}"/>')
 
-    at = [x(t["form"]) for t in table]
-    lane = lanes(at, TOKEN_GAP)
     for i, t in enumerate(table):
-        dy = (0, -56, 56, -112, 112)[lane[i]]
+        dy = LANE_OFFSETS[lane[i]]
         cls = "pos" if t["form"] >= 50 else "neg"
         crest = logos.get(team_slug(t["team"]))
         if crest:
@@ -462,11 +538,11 @@ def forecast_section(season, played, logos, forms):
         )
         bar = "".join(f'<i class="{cls}" style="width:{t[key]:.1%}"></i>'
                       for cls, key in (("w", "p_home"), ("d", "p_draw"), ("l", "p_away")))
-        mark = '<div class="badge">Topspiel</div>' if i == top else ""
+        mark = '<span class="badge">Topspiel</span>' if i == top else ""
         body.append(
-            f'<tr class="{"hl" if i == top else ""}">'
+            f'<tr class="{"hl marked" if i == top else ""}">'
             f'<td class="l dt">{short_date(t["date"])}</td>'
-            f'<td class="l fx">{mark}{sides}<div class="bar">{bar}</div></td>'
+            f'<td class="l fx">{sides}<div class="bar">{bar}</div>{mark}</td>'
             f'{cells}'
             f'<td class="xg s-hide">{num(t["xg_home"] + t["xg_away"])}</td></tr>'
         )
@@ -487,8 +563,7 @@ def forecast_section(season, played, logos, forms):
     else:
         balance = "<strong>Bilanz.</strong> Noch zu wenige Spiele für eine Bilanz."
 
-    return f"""
-  <section class="fcast">
+    return f"""<section class="fcast">
     <h2>Prognose für Spieltag {matchday}</h2>
     <p class="sub">Was das Modell für die nächsten Spiele erwartet – Wahrscheinlichkeiten,
     keine Tipps.</p>
@@ -506,6 +581,7 @@ def forecast_section(season, played, logos, forms):
         </tbody>
       </table>
     </div>
+    <div class="cols hints">
     <p class="hint"><strong>Wie das gerechnet wird.</strong> Aus allen bisherigen Ergebnissen
     bekommt jedes Team eine Angriffs- und eine Abwehrstärke. Daraus folgt, wie viele Tore beide
     Seiten in dieser Paarung im Schnitt erzielen – Heimvorteil eingerechnet –, und aus dem
@@ -523,6 +599,7 @@ def forecast_section(season, played, logos, forms):
     ganzes Tor Vorsprung in der Erwartung verschiebt die Siegchance in dieser Liga nur um rund
     sechs Prozentpunkte, weil die Ergebnisse hier zu stark streuen, um mehr herzugeben.</p>
     <p class="hint">{balance}</p>
+    </div>
   </section>
 """
 
@@ -534,11 +611,13 @@ def predictor_section():
     for r in compare():
         lead = ("<span class=\"flat\">Referenz</span>" if r["baseline"] else
                 f'{num(r["lead"] * 1000, 1)} <span class="pm">± {num(r["se"] * 1000, 1)}</span>')
-        body.append(f'<tr><td class="l">{r["name"]}</td>'
-                    f'<td>{num(r["rps"], 4)}</td><td class="lead">{lead}</td></tr>')
+        # The zero point everything else is measured against gets ruled off, the
+        # way a sheet rules off the line a column is totalled on.
+        body.append(f'<tr class="{"base" if r["baseline"] else ""}">'
+                    f'<td class="l">{r["name"]}</td>'
+                    f'<td>{num(r["rps"], 4)}</td><td class="ld">{lead}</td></tr>')
 
-    return f"""
-  <section class="fcast">
+    return f"""<section class="fcast">
     <h2>Was besser sein müsste – und es nicht ist</h2>
     <p class="sub">Jeder dieser Ansätze wurde mit demselben Verfahren in Wahrscheinlichkeiten
     umgerechnet und an der Saison {SEASON_PREVIOUS} nachgerechnet, ab Spieltag
@@ -558,9 +637,9 @@ def predictor_section():
     Auskünfte – „in dieser Liga gewinnt meistens das Heimteam“ –, in Tausendsteln und mit
     Standardfehler dahinter. Kein einziger Ansatz erreicht zwei Standardfehler: Keiner ist
     nachweisbar besser als diese Auskunft. Auch die Reihenfolge in der Tabelle ist selbst
-    Zufall – rechnet man die Eichung strenger, tauschen die Zeilen die Plätze. Deshalb steht die
-    Prognose oben als Blickwinkel da und nicht als Tipp, und deshalb bleibt die Form auf dieser
-    Seite eine Beschreibung.</p>
+    Zufall – rechnet man die Eichung strenger, tauschen die Zeilen die Plätze. Deshalb ist die
+    Prognose ein Blickwinkel und kein Tipp, und deshalb bleibt die Form auf dieser Seite eine
+    Beschreibung.</p>
   </section>
 """
 
@@ -573,21 +652,24 @@ def render(season, rows):
     generated = date.today().strftime("%d.%m.%Y")
 
     top_team, bottom_team = table[0], table[-1]
-    range_pts = top_team["form"] - bottom_team["form"]
     # The team the table is most wrong about right now - the whole reason the
-    # page exists, so it gets named in the header.
+    # page exists, so it opens the page as a sentence rather than sitting in a
+    # box in the corner. Worded as two readings of the same season, never as a
+    # claim about next week.
     out_rank, out = max(enumerate(table), key=lambda p: abs(p[1]["position"] - (p[0] + 1)))
     out_diff = out["position"] - (out_rank + 1)
     plural = "Platz" if abs(out_diff) == 1 else "Plätze"
-    if out_diff > 0:
-        out_note = (f"Tabellenplatz {out['position']}, in Form aber {out_rank + 1}. – "
-                    f"{abs(out_diff)} {plural} besser als die Tabelle vermuten lässt")
-    elif out_diff < 0:
-        out_note = (f"Tabellenplatz {out['position']}, in Form aber nur {out_rank + 1}. – "
-                    f"{abs(out_diff)} {plural} schlechter als die Tabelle vermuten lässt")
+    if out_diff == 0:
+        lede_pre = "Diese Woche sind sich beide einig:"
+        lede_who = "Form und Tabelle"
+        lede_post = "Kein Team steht in dieser Formtabelle anders als in der offiziellen."
     else:
-        out_note = "Form und Tabelle sind überall deckungsgleich"
-    out_cls = "up" if out_diff > 0 else ("down" if out_diff < 0 else "flat")
+        lede_pre = f"Die Tabelle sagt Platz {out['position']}."
+        lede_who = html.escape(out["team"])
+        nur = "" if out_diff > 0 else "nur "
+        richtung = "besser" if out_diff > 0 else "schlechter"
+        lede_post = (f"Die letzten fünf Spieltage sagen {nur}Platz {out_rank + 1} – "
+                     f"{abs(out_diff)} {plural} {richtung}, als die Tabelle vermuten lässt.")
 
     # Two markers on the table, each by a fixed rule so a reader can check them
     # against the row they sit on. Both have a floor: one place of difference or
@@ -603,6 +685,19 @@ def render(season, rows):
 
     logos = load_logos()
     pitch_svg, pitch_lo, pitch_hi = svg_pitch(table, logos)
+
+    # Forecast and the measurement of what it is worth belong side by side - the
+    # page is not allowed to publish one without the other, and set as two
+    # columns of the same row that pairing is shown rather than only asserted.
+    # A finished season has no fixtures left, and then the comparison stands on
+    # its own at the page's normal measure.
+    fcast = forecast_section(season, rows, logos, {t["team"]: t["form"] for t in table})
+    predictors = predictor_section()
+    if fcast:
+        outlook = (f'<div class="dash fdash"><div class="col">{fcast}</div>'
+                   f'<div class="col">{predictors}</div></div>')
+    else:
+        outlook = f'<div class="fdash solo">{predictors}</div>'
 
     body_rows = []
     for rank, t in enumerate(table):
@@ -626,26 +721,34 @@ def render(season, rows):
         crest = logos.get(team_slug(t["team"]))
         crest = f'<img class="lg" src="{crest}" alt="">' if crest else ""
         if rank == hot_rank:
+            # The highlighter across the row does the pointing for this one.
             badge = '<span class="badge">Mannschaft der Stunde</span>'
         elif rank == jump_rank:
-            badge = '<span class="badge">Formsprung</span>'
+            badge = f'<span class="badge">Formsprung{ARROW}</span>'
         else:
             badge = ""
 
+        # The badge sits beside the name block rather than inside it, and CSS
+        # takes it out of flow: writing on a printed sheet cannot move what was
+        # printed first, so an annotation must not change a row's height.
+        # Only the team of the hour gets the highlighter on top of its note; the
+        # form jump is the smaller finding and stays a written remark, so the
+        # two markers are told apart by how loudly they are marked.
         body_rows.append(
             f'<tr data-rank="{rank}" tabindex="0" '
+            f'class="{"marked" if rank == hot_rank else ""}" '
             f'style="--c:{PALETTE[rank % len(PALETTE)]};--i:{rank}">'
             f'<td class="rank">{tok}</td>'
             f'<td class="team"><div class="tc">{crest}<div>'
-            f'<span class="tn">{html.escape(t["team"])}{badge}</span>'
+            f'<span class="tn">{html.escape(t["team"])}</span>'
             f'<span class="form"><span class="seg" aria-hidden="true">{segs}</span>'
-            f'<span class="rt">{w}-{d}-{l}</span></span></div></div></td>'
+            f'<span class="rt">{w}-{d}-{l}</span></span></div></div>{badge}</td>'
             f'<td class="power"><div class="pw"><b>{num(t["form"])}</b></div></td>'
             f"<td>{delta}</td>"
             f'<td class="power season">{num(t["power"])}</td>'
             f"<td class=\"s-hide\">{t['matches']}</td>"
             f"<td class=\"s-hide\">{t['gf']}:{t['ga']}</td>"
-            f"<td class=\"s-hide\">{t['gf'] - t['ga']:+d}</td>"
+            f"<td class=\"s-hide\">{signed(t['gf'] - t['ga'])}</td>"
             f"<td class=\"tab\">{t['position']}{gap}</td>"
             f"</tr>"
         )
@@ -657,240 +760,382 @@ def render(season, rows):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Power Ranking – {html.escape(STAFFEL_NAME)} {season}</title>
 <style>
+  {font_face("Archivo Narrow", "archivo-narrow.woff2", "400 700")}
+  {font_face("Source Sans 3", "source-sans-3.woff2", "300 700")}
+  {font_face("Caveat", "caveat.woff2", "500 700")}
   :root {{
-    --slate:#1b2a36; --slate-2:#22343f; --ink:#16202a; --muted:#5c6874;
-    --paper:#edf0f3; --card:#fff; --line:#e3e7eb; --track:#e8ecef;
-    --up:#1c7a58; --down:#9c2f4a; --grey:#d7dde2; --mark:#9a5316;
-    /* Same semantics, lifted for legibility on the slate ground. */
-    --up-l:#57c79b; --down-l:#e8788f; --on-slate:#a9bccb;
+    /* Two faces, far apart on purpose. The narrow print grotesque carries every
+       figure, heading and table head - this is a page about one number per team,
+       so the numbers get the voice. The humanist sans carries club names and the
+       long plain-language passages, where width and openness matter more. */
+    --display:"Archivo Narrow","Arial Narrow",system-ui,sans-serif;
+    --body:"Source Sans 3","Segoe UI",system-ui,sans-serif;
+    /* Only the two editorial markers use this - the bits of the sheet a person
+       wrote rather than the model computed. Subset to letters and a space, so
+       a badge label with a digit in it would fall back to the display face. */
+    --hand:"Caveat","Segoe Script",cursive;
+
+    /* Uncoated stock and printing ink: this is a notice pinned up after the
+       weekend, not a broadcast graphic. */
+    --paper:#e7e4dd; --card:#fcfbf8; --ink:#23201b; --muted:#6b6459;
+    --line:#d8d3c8; --track:#dcd7cc; --sel:#f1eee4;
+    /* Above and below the 50-point league average. These two mean the same
+       thing everywhere on the page and are the one thing that must not drift. */
+    --up:#16764f; --down:#96263f; --draw:#a9a294;
+    /* The pitch is the only dark surface on the page, and it is grass rather
+       than a dark UI panel - so both meanings need a lifted variant on it. */
+    --turf:#1f3129; --chalk:rgba(255,255,255,.26); --on-turf:#a7bdaf;
+    --up-l:#63d9a6; --down-l:#f2808f;
+    /* Editorial markers only, in a colour no measurement uses: amber ink for
+       the written notes, a highlighter yellow for the rows they point at. */
+    --mark:#7a4a09; --mark-bg:#f6e2bc; --mark-line:#e6cb96;
   }}
   * {{ box-sizing:border-box; }}
-  body {{ margin:0; background:var(--paper); color:var(--ink);
-         font:16px/1.6 system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-         -webkit-font-smoothing:antialiased; }}
+  /* The stock itself, then what has happened to it. Top three layers are four
+     coffee marks in fixed places, so the sheet looks the same from one matchday
+     to the next; under them the sparse dark flecks of recycled paper and a fine
+     fibre grain, both drawn by the browser rather than shipped as images. All
+     of it sits on the ground only - every card and the pitch are opaque. */
+  body {{ margin:0; background-color:var(--paper); color:var(--ink);
+         font:16.5px/1.62 var(--body); -webkit-font-smoothing:antialiased;
+         background-repeat:no-repeat, no-repeat, no-repeat, no-repeat,
+                           repeat, repeat;
+         background-size:186px 168px, 118px 112px, 148px 132px, 96px 92px,
+                         240px 240px, 190px 190px;
+         background-position:5% 2.4%, 93% 5%, 86% 71%, 11% 92%, 0 0, 0 0;
+         background-image:
+           radial-gradient(ellipse at 50% 50%, rgba(122,84,40,0) 0 43%,
+             rgba(122,84,40,.075) 45% 49%, rgba(122,84,40,.03) 50.5% 54%,
+             rgba(122,84,40,0) 56%),
+           radial-gradient(ellipse at 50% 50%, rgba(122,84,40,0) 0 45%,
+             rgba(122,84,40,.06) 47% 51%, rgba(122,84,40,0) 53%),
+           radial-gradient(ellipse at 50% 50%, rgba(122,84,40,.032) 0 34%,
+             rgba(122,84,40,.05) 44% 48%, rgba(122,84,40,0) 51%),
+           radial-gradient(ellipse at 50% 50%, rgba(122,84,40,.045) 0 30%,
+             rgba(122,84,40,0) 64%),
+           url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.1' numOctaves='1' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='7' intercept='-4.85'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23f)' opacity='0.5'/%3E%3C/svg%3E"),
+           url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='190' height='190'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.55 1.3' numOctaves='5' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='190' height='190' filter='url(%23p)' opacity='0.115'/%3E%3C/svg%3E"); }}
   .wrap {{ max-width:1760px; margin:0 auto; padding:0 clamp(16px,2.4vw,36px); }}
-  .prose {{ max-width:64ch; }}
+  .prose {{ max-width:66ch; }}
   p {{ margin:0 0 12px; }}
+  strong, b {{ font-weight:600; }}
   a {{ color:inherit; text-underline-offset:2px; }}
-  a:focus-visible {{ outline:2px solid currentColor; outline-offset:3px; border-radius:2px; }}
+  a:focus-visible {{ outline:2px solid currentColor; outline-offset:3px; }}
+  :where(tr, .ptok path, .line polyline) {{ transition:background-color .12s ease,
+    box-shadow .12s ease, stroke .12s ease, stroke-width .12s ease; }}
+  @media (prefers-reduced-motion:reduce) {{ * {{ transition:none !important; }} }}
 
   /* ---- The token: one numbered disc, coloured by side of the 50 average ---- */
   .tok {{ display:inline-flex; align-items:center; justify-content:center;
-          width:26px; height:26px; border-radius:50%; flex:0 0 auto;
-          font-size:13px; font-weight:700; color:#fff;
+          width:27px; height:27px; border-radius:50%; flex:0 0 auto;
+          font:700 14px var(--display); color:#fff;
           font-variant-numeric:tabular-nums; }}
   .tok.pos {{ background:var(--up); }}
   .tok.neg {{ background:var(--down); }}
 
-  /* ---- Hero: one compact strip so the dashboard below stays in view ------- */
-  .band {{ background:var(--slate); color:#fff; padding:24px 0 22px;
-           background-image:repeating-linear-gradient(90deg,
-             rgba(255,255,255,.022) 0 46px, rgba(255,255,255,0) 46px 92px); }}
-  .top {{ display:flex; flex-wrap:wrap; align-items:flex-end; gap:18px 30px; }}
-  .brand {{ flex:1 1 300px; }}
-  .league {{ margin:0 0 6px; color:var(--on-slate); font-size:14px; }}
-  h1 {{ margin:0; font-size:clamp(28px,4vw,44px); font-weight:800;
-        letter-spacing:-.03em; line-height:1; }}
-  .tag {{ margin:9px 0 0; color:var(--on-slate); font-size:14.5px; max-width:46ch; }}
-  .md {{ flex:0 0 auto; text-align:right; line-height:1.2; }}
-  .md .k {{ display:block; color:var(--on-slate); font-size:13px; }}
-  .md .n {{ display:block; font-size:56px; font-weight:700; letter-spacing:-.02em;
-            font-variant-numeric:tabular-nums; }}
-  .md .dt {{ display:block; color:var(--on-slate); font-size:13px;
-             font-variant-numeric:tabular-nums; }}
-  .cells {{ flex:1 1 100%; display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }}
-  .cell {{ background:var(--slate-2); border:1px solid rgba(255,255,255,.09);
-           border-radius:10px; padding:10px 13px; }}
-  .cell .k {{ display:block; color:var(--on-slate); font-size:11.5px;
-              letter-spacing:.06em; text-transform:uppercase; }}
-  .cell .v {{ display:block; font-size:18px; font-weight:700; letter-spacing:-.01em;
-              margin-top:3px; line-height:1.25; }}
-  .cell .v.sm {{ font-size:15px; }}
-  .cell .s {{ display:block; color:var(--on-slate); font-size:12.5px; margin-top:2px; }}
-  .cell .v.up {{ color:var(--up-l); }} .cell .v.down {{ color:var(--down-l); }}
+  /* ---- Masthead ----------------------------------------------------------- */
+  /* No dark hero band: the sheet starts on paper and the heavy rule under the
+     wordmark is what says "this is the head of the notice". */
+  .mast {{ padding:22px 0 0; }}
+  .mhead {{ display:flex; flex-wrap:wrap; align-items:flex-end; gap:10px 32px;
+            justify-content:space-between; padding-bottom:10px;
+            border-bottom:3px solid var(--ink); }}
+  h1 {{ margin:0; font:700 clamp(30px,3.9vw,50px)/1 var(--display); }}
+  .tag {{ margin:7px 0 0; color:var(--muted); font-size:15px; max-width:74ch; }}
+  .where {{ margin:0; color:var(--muted); font-size:14.5px; line-height:1.4;
+            text-align:right; }}
+  .where b {{ color:var(--ink); font-weight:600;
+              font-variant-numeric:tabular-nums; }}
+
+  /* The claim the official table cannot make, stated as a sentence. It is the
+     reason the page exists, so it opens the page. The two league extremes sit
+     beside it rather than under it - stacked, the head ran half a screen tall
+     before the ranking itself came into view. */
+  .lede {{ display:flex; flex-wrap:wrap; align-items:flex-end;
+           justify-content:space-between; gap:18px 52px; padding:18px 0 20px; }}
+  .claim {{ flex:1 1 460px; }}
+  .claim p {{ margin:0; max-width:46ch; font-size:clamp(16px,1.35vw,19px);
+              color:var(--muted); }}
+  .claim .who {{ font:700 clamp(28px,3.9vw,50px)/1.04 var(--display);
+                 color:var(--ink); margin:2px 0 4px; max-width:20ch; }}
+
+  .facts {{ flex:0 0 auto; display:flex; flex-direction:column; gap:5px; }}
+  .fact {{ display:flex; align-items:baseline; gap:9px; margin:0; }}
+  .fact .k {{ color:var(--muted); font-size:14.5px; }}
+  .fact .t {{ font-weight:600; }}
+  .fact .n {{ font:700 21px var(--display); font-variant-numeric:tabular-nums; }}
+  .fact .n.pos {{ color:var(--up); }} .fact .n.neg {{ color:var(--down); }}
 
   /* ---- Body -------------------------------------------------------------- */
-  main {{ padding:40px 0 56px; }}
-  h2 {{ font-size:19px; font-weight:700; letter-spacing:-.01em; margin:0 0 10px;
-        padding-top:12px; position:relative; }}
-  h2::before {{ content:""; position:absolute; top:0; left:0; width:26px; height:3px;
-                background:var(--slate); border-radius:2px; }}
-  .sub {{ color:var(--muted); font-size:13.5px; margin:-2px 0 12px; max-width:64ch; }}
+  main {{ padding:0 0 60px; }}
+  h2 {{ font:600 22px/1.15 var(--display); margin:28px 0 8px; padding-top:9px;
+        border-top:2.5px solid var(--ink); }}
+  section > h2:first-child {{ margin-top:0; }}
+  .sub {{ color:var(--muted); font-size:14.5px; margin:-1px 0 13px; max-width:66ch; }}
 
   /* The pitch runs across the full page width - it is the one view that shows
      the whole league at once, and the tokens need the room. */
-  .pitchsec {{ margin:0 0 30px; }}
+  .pitchsec {{ margin:0 0 6px; }}
 
   /* The dashboard below it: table on the left, the form chart on the right, so
      that clicking a team is visible in all three at once. */
   .dash {{ display:grid; grid-template-columns:1fr; gap:26px; align-items:start; }}
   .col section + section {{ margin-top:22px; }}
 
-  .card {{ background:var(--card); border:1px solid var(--line); border-radius:12px;
+  .card {{ background:var(--card); border:1px solid var(--line); border-radius:3px;
            padding:0; overflow-x:auto; }}
-  .card.rank {{ background-image:repeating-linear-gradient(90deg,
-                 rgba(27,42,54,.017) 0 64px, rgba(27,42,54,0) 64px 128px); }}
-  table {{ width:100%; border-collapse:collapse; font-size:15px; }}
-  th, td {{ padding:9px 7px; text-align:right; border-bottom:1px solid var(--line);
-            font-variant-numeric:tabular-nums; }}
+  table {{ width:100%; border-collapse:collapse;
+           font:15.5px var(--display); font-variant-numeric:tabular-nums; }}
+  th, td {{ padding:9px 8px; text-align:right; border-bottom:1px solid var(--line); }}
   th:first-child, td:first-child {{ padding-left:14px; }}
   th:last-child, td:last-child {{ padding-right:14px; }}
   tbody tr:last-child td {{ border-bottom:0; }}
-  thead th {{ background:var(--slate); color:#dbe6ee; border-bottom:0;
-              font-size:11.5px; font-weight:600; letter-spacing:.06em;
-              text-transform:uppercase; white-space:nowrap; padding-top:10px;
-              padding-bottom:10px; }}
+  /* A ruled head rather than a dark bar: the whole page is a printed sheet, and
+     the double rule is how a sheet separates the head from the entries. */
+  thead th {{ font:600 13.5px var(--display); color:var(--ink); white-space:nowrap;
+              border-bottom:2px solid var(--ink); padding-top:11px;
+              padding-bottom:7px; }}
   th.l, td.team, td.power {{ text-align:left; }}
-  td.rank {{ width:48px; }}
-  td.team {{ line-height:1.25; min-width:150px; }}
-  .tc {{ display:flex; align-items:center; gap:9px; }}
-  .lg {{ width:26px; height:26px; object-fit:contain; flex:0 0 auto; }}
-  .tn {{ display:block; font-weight:600; }}
-  .form {{ display:flex; align-items:center; gap:7px; margin-top:3px; }}
-  .pw b {{ font-size:17px; font-weight:700; }}
+  td.rank {{ width:46px; }}
+  td.team {{ line-height:1.3; min-width:232px; }}
+  .tc {{ display:flex; align-items:center; gap:10px; }}
+  .lg {{ width:28px; height:28px; object-fit:contain; flex:0 0 auto; }}
+  /* A club name that wraps makes its row taller than every other one, which is
+     exactly the ragged scan the form table exists to avoid. It keeps one line
+     and widens its column instead; the card already scrolls if that is too
+     much. The phone rule below hands wrapping back, where width is the scarce
+     thing rather than rhythm. */
+  .tn {{ display:block; font-family:var(--body); font-weight:600; font-size:15.5px;
+         white-space:nowrap; }}
+  /* nowrap so an annotation too long for the cell runs out of it rather than
+     dropping onto a line of its own; the phone rule below puts wrapping back. */
+  .form {{ display:flex; align-items:center; flex-wrap:nowrap; gap:4px 8px; margin-top:2px; }}
+  /* The one bold thing on the page: the form figure, set large in the narrow
+     face. Everything around it stays quiet. */
+  .pw b {{ font:700 23px var(--display); }}
 
   .seg {{ display:flex; gap:4px; flex:0 0 auto; align-items:center; }}
   .seg i {{ width:7px; height:7px; border-radius:50%; flex:0 0 auto; }}
   .seg i.w {{ background:var(--up); }}
-  .seg i.d {{ background:#aeb9c2; }}
+  .seg i.d {{ background:var(--draw); }}
   .seg i.l {{ background:var(--down); }}
-  .rt {{ color:var(--muted); font-size:12.5px; }}
+  .rt {{ color:var(--muted); font-size:13px; }}
 
   tbody tr[data-rank] {{ cursor:pointer; }}
-  tbody tr[data-rank]:hover {{ background:#f4f7f9; }}
-  tbody tr:focus-visible {{ outline:2px solid var(--slate); outline-offset:-2px; }}
-  tr.sel {{ background:#f4f7f9; background:color-mix(in srgb, var(--c) 7%, #fff); }}
+  tbody tr[data-rank]:hover {{ background:#f2efe7; }}
+  tbody tr:focus-visible {{ outline:2px solid var(--ink); outline-offset:-2px; }}
+  /* One treatment for every selected row. Tinting each row with its own colour
+     read as several different states instead of one. */
+  tr.sel {{ background-color:var(--sel); }}
+
+  /* The row an editorial marker points at, gone over with a highlighter. Two
+     strokes, neither of them the width of the row - a marker starts and stops
+     where the hand stops, and the second pass never lands on the first.
+     Background images rather than positioned pseudo-elements: `position:
+     relative` on a <tr> throws off column widths under `border-collapse:
+     collapse`, which squeezed the marked row's cells to a fraction of the
+     others. The wobble is in the SVG outline, the uneven pressure in its
+     gradient, and a background paints under the cell content for free. */
+  tr.marked {{ background-repeat:no-repeat, no-repeat;
+            background-size:63% 64%, 46% 42%;
+            background-position:2% 56%, 10% 88%;
+            background-image:{STROKE_A}, {STROKE_B}; }}
   tr.sel td:first-child {{ box-shadow:inset 4px 0 0 var(--c); }}
-  tr.sel .tok {{ box-shadow:0 0 0 2px #fff, 0 0 0 4px var(--c); }}
+  tr.sel .tok {{ box-shadow:0 0 0 2px var(--sel), 0 0 0 4px var(--c); }}
 
   .up {{ color:var(--up); }} .down {{ color:var(--down); }} .flat {{ color:var(--muted); }}
-  .chip {{ display:inline-block; margin-left:7px; padding:1px 7px; border-radius:99px;
-           font-size:12px; font-weight:600; }}
-  .chip.up {{ background:#dcefe6; }} .chip.down {{ background:#f6e5ea; }}
-  .chip.flat {{ background:#eef1f3; }}
+  td.tab {{ white-space:nowrap; }}
+  /* Square: a chip is a measured difference. Badges below are stamps and stay
+     rounded, so the two never read as the same kind of thing. */
+  .chip {{ display:inline-block; margin-left:6px; padding:1px 6px; border-radius:2px;
+           font:600 12.5px var(--display); }}
+  .chip.up {{ background:#d6e8de; color:#0e5c3d; }}
+  .chip.down {{ background:#f2dbe0; color:#7d1f34; }}
+  .chip.flat {{ background:#e4e0d6; color:var(--muted); }}
 
   /* Editorial marker, deliberately in a colour no data uses: green and wine
      mean above and below average everywhere else on the page, and a badge is
-     not a measurement. */
-  .badge {{ display:inline-block; margin-left:7px; padding:1px 7px; border-radius:99px;
-            font-size:10.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
-            white-space:nowrap; vertical-align:1px;
-            background:#fbeedd; color:var(--mark); border:1px solid #f0dcc2; }}
+     not a measurement. Set as a pen annotation for the same reason - a ring
+     drawn round a row by hand cannot be mistaken for something the model
+     computed. The lopsided radii are what make the ring look drawn; they scale
+     with the label instead of distorting the way a stretched drawing would.
+     Taken out of flow entirely and anchored to the cell rather than laid out
+     in it: an annotation written onto a sheet cannot push the print around, so
+     it must not change a row's height or a column's width. It is free to run
+     over the rule below it and across the cell next door. */
+  td.team, td.fx {{ position:relative; }}
+  .badge {{ position:absolute; z-index:5; left:150px; bottom:-3px;
+            padding:2px 13px 3px; white-space:nowrap;
+            font:700 16px/1.2 var(--hand);
+            color:var(--mark); transform:rotate(-4.2deg); }}
+  /* Two overlapping ovals, because that is how a ring round something on paper
+     actually comes out - one pass never closes. Percentage radii keep it an
+     oval at any label length instead of a rounded box. */
+  .badge::before, .badge::after {{ content:""; position:absolute; inset:0;
+            border:1.5px solid rgba(122,74,9,.5);
+            border-radius:47% 53% 44% 56%/62% 58% 42% 38%; }}
+  .badge::after {{ border-radius:53% 47% 57% 43%/45% 40% 60% 55%;
+            transform:rotate(1.3deg) scale(1.035); opacity:.5; }}
+  /* Drawn outside the ring and clear of the digits, so the note reaches the
+     column it is about without covering anything measured. */
+  .arw {{ position:absolute; left:100%; top:-3px; width:46px; height:21px;
+          margin-left:3px; overflow:visible; }}
+  .arw path {{ fill:none; stroke:rgba(122,74,9,.62); stroke-width:1.9;
+               stroke-linecap:round; stroke-linejoin:round; }}
 
   /* ---- Forecast and the predictor comparison ------------------------------ */
-  /* Capped rather than full-width: a six-column table stretched to 1760px reads
-     as sparse, and the prose below keeps its own measure the same way. */
-  .fcast {{ margin-top:34px; max-width:1080px; }}
+  /* The two share one row of the same grid the dashboard uses: publishing a
+     forecast is only defensible next to the measurement of how little it is
+     worth, and side by side that is shown rather than only written down. */
+  .fdash {{ margin-top:34px; }}
+  .fdash.solo {{ max-width:1080px; }}
   .fcast td.l {{ text-align:left; }}
-  .fcast td.dt {{ color:var(--muted); font-size:13px; white-space:nowrap; }}
+  .fcast td.dt {{ color:var(--muted); font-size:13.5px; white-space:nowrap; }}
   .fcast td.p {{ width:64px; }}
   .fcast td.best {{ font-weight:700; }}
-  .fcast td.xg, .fcast td.lead {{ color:var(--muted); white-space:nowrap; }}
+  .fcast td.xg, .fcast td.ld {{ color:var(--muted); white-space:nowrap; }}
+  .fcast tr.base > td {{ border-top:2px solid var(--ink); }}
+  .fcast td.l:first-child + td {{ font-family:var(--body); }}
   .fcast .pm {{ font-size:12.5px; }}
-  .fcast tr.hl {{ background:#fdf7ef; }}
-  .fcast tr.hl td:first-child {{ box-shadow:inset 3px 0 0 var(--mark); }}
-  .fx .badge {{ margin:0 0 5px; }}
+  /* The highlighter carries the marking here, so no tinted row underneath it,
+     and the strokes get their own lengths - two rows marked identically would
+     look stamped rather than written. */
+  .fcast tr.hl > td:first-child {{ box-shadow:inset 3px 0 0 var(--mark); }}
+  .fcast tr.marked {{ background-size:56% 58%, 38% 34%;
+            background-position:3% 34%, 14% 78%; }}
+  /* In the empty right half of the fixture cell, clear of both club names. */
+  .fx .badge {{ left:auto; right:5%; bottom:auto; top:50%;
+                transform:translateY(-50%) rotate(-4.8deg); }}
   .fxt {{ display:flex; align-items:center; gap:8px; line-height:1.3; }}
+  .fxt span {{ font-weight:600; }}
   .fxt + .fxt {{ margin-top:3px; }}
-  .lg.sm {{ width:20px; height:20px; }}
+  .lg.sm {{ width:21px; height:21px; }}
   /* Same three colours as the result dots, and the same meaning: seen from the
      home side, win / draw / loss. */
-  .bar {{ display:flex; height:6px; max-width:280px; margin-top:7px;
-          border-radius:99px; overflow:hidden; background:var(--track); }}
+  .bar {{ display:flex; height:5px; max-width:280px; margin-top:7px;
+          overflow:hidden; background:var(--track); }}
   .bar i.w {{ background:var(--up); }}
-  .bar i.d {{ background:#aeb9c2; }}
+  .bar i.d {{ background:var(--draw); }}
   .bar i.l {{ background:var(--down); }}
 
   /* ---- The pitch panel ---------------------------------------------------- */
-  .pitchcol {{ background:var(--slate); border-radius:12px; padding:12px 14px 11px;
-               background-image:repeating-linear-gradient(90deg,
-                 rgba(255,255,255,.022) 0 40px, rgba(255,255,255,0) 40px 80px); }}
+  /* Grass, with the mown bands the stripes on a real pitch make - the one place
+     on the page where a texture depicts the actual object. */
+  /* Four layers, front to back: a grain so the green is not a flat fill, a
+     vignette for the fall-off a real pitch has towards the touchlines, the fine
+     lines the mower leaves, and the wide mown bands across the pitch. */
+  .pitchcol {{ background-color:var(--turf); border-radius:3px; padding:11px 14px 10px;
+               background-repeat:repeat, no-repeat, repeat, repeat;
+               background-size:150px 150px, 100% 100%, 100% 100%, 100% 100%;
+               background-image:
+                 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='150' height='150' filter='url(%23g)' opacity='0.13'/%3E%3C/svg%3E"),
+                 radial-gradient(130% 155% at 50% 50%, rgba(0,0,0,0) 36%,
+                   rgba(0,0,0,.32) 100%),
+                 repeating-linear-gradient(0deg, rgba(255,255,255,.017) 0 4px,
+                   rgba(255,255,255,0) 4px 9px),
+                 repeating-linear-gradient(90deg, rgba(255,255,255,.055) 0 58px,
+                   rgba(0,0,0,.07) 58px 116px); }}
   .pwrap {{ position:relative; }}
   .pwrap svg {{ width:100%; height:auto; display:block; }}
-  .pg rect, .pg circle {{ fill:none; stroke:rgba(255,255,255,.15); stroke-width:1.4; }}
-  .axis {{ stroke:rgba(255,255,255,.17); stroke-width:1; stroke-dasharray:3 4; }}
+  .pg rect, .pg circle {{ fill:none; stroke:var(--chalk); stroke-width:1.6; }}
+  .half {{ stroke:var(--chalk); stroke-width:1.6; }}
+  .stick {{ stroke:rgba(255,255,255,.19); stroke-width:1.4; }}
+  .axis {{ stroke:rgba(255,255,255,.15); stroke-width:1; stroke-dasharray:3 5; }}
   .ptok {{ cursor:pointer; }}
-  .ptok path {{ stroke:var(--slate); stroke-width:2.5; stroke-linejoin:round; }}
+  .ptok path {{ stroke:var(--turf); stroke-width:2.5; stroke-linejoin:round; }}
   .ptok path.pos {{ fill:var(--up-l); }}
   .ptok path.neg {{ fill:var(--down-l); }}
   /* The crest sits on a white chest patch, so the shirt colour still reads as
      the above/below-average marker the legend explains. */
   .ptok circle.in {{ fill:#fff; }}
-  .ptok circle.rkb {{ fill:var(--slate); stroke:#fff; stroke-width:1.5; }}
-  .ptok text {{ fill:var(--slate); font-size:23px; font-weight:700; text-anchor:middle; }}
+  .ptok circle.rkb {{ fill:var(--turf); stroke:#fff; stroke-width:1.5; }}
+  .ptok text {{ fill:var(--turf); font:700 23px var(--display); text-anchor:middle; }}
   .ptok text.rk {{ fill:#fff; font-size:12px; }}
   .ptok.sel path {{ stroke:#fff; stroke-width:3.5; }}
-  .pends {{ display:flex; justify-content:space-between; gap:12px; margin:0 0 6px; }}
+  .pends {{ display:flex; justify-content:space-between; gap:12px; margin:0 0 5px; }}
   .pend {{ display:flex; align-items:center; gap:7px; margin:0;
-           color:var(--on-slate); font-size:12px; }}
+           color:var(--on-turf); font-size:12.5px; }}
   .pend i {{ width:9px; height:9px; border-radius:50%; flex:0 0 auto; }}
   .pend i.pos {{ background:var(--up-l); }} .pend i.neg {{ background:var(--down-l); }}
-  .pend b {{ color:#fff; font-weight:700; font-variant-numeric:tabular-nums; }}
-  .phead {{ margin:10px 0 0; padding-top:9px; color:var(--on-slate); font-size:12px;
-            line-height:1.5; border-top:1px solid rgba(255,255,255,.1); }}
+  .pend b {{ color:#fff; font:700 15px var(--display);
+             font-variant-numeric:tabular-nums; }}
+  .phead {{ margin:9px 0 0; padding-top:8px; color:var(--on-turf); font-size:12.5px;
+            line-height:1.5; border-top:1px solid rgba(255,255,255,.12); }}
 
   /* ---- Chart -------------------------------------------------------------- */
   .card.chart {{ padding:10px 12px; }}
   .chart svg {{ width:100%; height:auto; display:block; }}
   .zone.pos {{ fill:var(--up); opacity:.05; }}
   .zone.neg {{ fill:var(--down); opacity:.05; }}
-  .grid {{ stroke:#eef1f4; stroke-width:1; }}
-  .tick {{ fill:var(--muted); font-size:11px; }}
-  .line polyline {{ fill:none; stroke:#e0e5ea; stroke-width:1.5; stroke-linejoin:round;
+  .grid {{ stroke:#e9e5da; stroke-width:1; }}
+  .tick {{ fill:var(--muted); font:11.5px var(--display); }}
+  .line polyline {{ fill:none; stroke:#d5cfc2; stroke-width:1.5; stroke-linejoin:round;
                     stroke-linecap:round; }}
   .line circle {{ display:none; }}
   .line .end {{ display:none; }}
   .line.sel polyline {{ stroke:var(--c); stroke-width:2.8; }}
-  .line.sel circle {{ display:inline; fill:#fff; stroke:var(--c); stroke-width:2; }}
+  .line.sel circle {{ display:inline; fill:var(--card); stroke:var(--c); stroke-width:2; }}
   .line.sel .end {{ display:inline; }}
-  .end circle {{ display:inline; stroke:#fff; stroke-width:2.5; }}
+  .end circle {{ display:inline; stroke:var(--card); stroke-width:2.5; }}
   .end circle.pos {{ fill:var(--up); }}
   .end circle.neg {{ fill:var(--down); }}
-  .end text {{ fill:#fff; font-size:13px; font-weight:700; text-anchor:middle; }}
+  .end text {{ fill:#fff; font:700 13px var(--display); text-anchor:middle; }}
   /* The season score is context, not the headline: same column width, quieter. */
   td.season {{ color:var(--muted); font-weight:600; }}
 
-  .scale {{ margin:20px 0 22px; max-width:64ch; }}
-  .scale .track {{ position:relative; height:12px; border-radius:99px;
-                   background:linear-gradient(90deg,#f2e6ea,#eef1f3,#e2efe8); }}
-  .scale .occ {{ position:absolute; top:-3px; height:18px; border-radius:99px;
-                 background:var(--slate); }}
-  .scale .mid {{ position:absolute; left:50%; top:-6px; bottom:-6px; width:1px;
-                 background:#98a4ae; }}
-  .scale .ends {{ display:flex; justify-content:space-between; margin-top:8px;
-                  color:var(--muted); font-size:12.5px; }}
-  .scale .ends b {{ color:var(--ink); font-weight:600; }}
+  .hint {{ color:var(--muted); font-size:14px; line-height:1.58; margin:12px 0 0;
+           max-width:66ch; }}
+  /* The legend for the table sits in the chart column, not under the table it
+     explains: side by side the chart ran three hundred pixels short of the
+     fourteen rows beside it, and a legend reads as well across the gutter as
+     underneath. Ruled off so it is not taken for a note about the chart. */
+  .hint.legend {{ margin-top:15px; padding-top:12px;
+                  border-top:1px solid var(--line); }}
+  /* The small print under the forecast, set denser and in two columns so the
+     explanation does not run longer than the table it explains. */
+  .cols {{ column-count:2; column-gap:46px; max-width:1000px;
+           font-size:15.5px; line-height:1.58; }}
+  .cols p {{ margin:0 0 13px; break-inside:avoid; }}
+  .cols.hints {{ margin-top:14px; }}
+  .cols .hint {{ max-width:none; margin:0 0 13px; }}
 
-  .hint {{ color:var(--muted); font-size:13.5px; line-height:1.55; margin:12px 0 0;
-           max-width:64ch; }}
-  .note {{ background:var(--card); border:1px solid var(--line);
-           border-left:3px solid var(--down); border-radius:10px;
-           padding:14px 18px; margin:16px 0 20px; max-width:64ch; font-size:15px; }}
-  .note p {{ margin:0; }}
-  .below {{ margin-top:40px; }}
-  footer {{ margin-top:44px; padding-top:16px; border-top:1px solid #dfe4e9;
-            color:var(--muted); font-size:13px; max-width:64ch; }}
+  /* The rule runs the width of the sheet, the text keeps a readable measure. */
+  footer {{ margin-top:40px; padding-top:14px; border-top:2.5px solid var(--ink);
+            color:var(--muted); font-size:13.5px; }}
+  footer p {{ margin:0; max-width:100ch; }}
 
-  /* Two columns as soon as the table fits next to the pitch without scrolling. */
+  /* Two columns as soon as the table fits next to the chart without scrolling. */
   @media (min-width:1400px) {{
-    .dash {{ grid-template-columns:minmax(0,44fr) minmax(0,56fr); gap:28px; }}
-    .cells {{ flex:2 1 640px; }}
+    /* Nine columns of table need the room more than five matchdays of chart. */
+    .dash {{ grid-template-columns:minmax(0,60fr) minmax(0,40fr); gap:30px; }}
+    /* Seeing the line move is the point of clicking a row, so the chart follows
+       the table down. It now carries the legend too, so it can get taller than
+       a short window - then it scrolls in place rather than hiding its foot. */
+    .chartcol {{ position:sticky; top:18px;
+                 max-height:calc(100vh - 36px); overflow-y:auto; }}
   }}
   @media (max-width:1399px) {{
     /* Stacked: keep one comfortable measure instead of stretching to 1760px. */
-    .dash, .pitchsec, .fcast {{ max-width:1080px; margin-left:auto; margin-right:auto; }}
+    .dash, .pitchsec, .fdash {{ max-width:1080px;
+                                margin-left:auto; margin-right:auto; }}
+  }}
+  /* Below this the two columns of small print would be forty characters wide,
+     which is worse than one column of the same text. */
+  @media (max-width:900px) {{
+    .cols {{ column-count:1; max-width:66ch; font-size:16px; }}
   }}
   @media (max-width:700px) {{
     .s-hide {{ display:none; }}
-    .band {{ padding:20px 0 20px; }}
-    .md .n {{ font-size:44px; }}
-    .cells {{ grid-template-columns:1fr; gap:8px; }}
-    .cell .v {{ font-size:17px; }}
+    .mhead {{ align-items:flex-start; }}
+    .where {{ text-align:left; }}
+    .lede {{ padding:19px 0 18px; }}
+    .facts {{ gap:6px 26px; padding:13px 0 24px; }}
     th, td {{ padding:9px 5px; }}
     th:first-child, td:first-child {{ padding-left:10px; }}
     th:last-child, td:last-child {{ padding-right:10px; }}
     td.rank {{ width:38px; }}
     td.team {{ min-width:0; }}
+    .tn {{ white-space:normal; }}
     /* Six columns is already a lot on a phone: the season score is the one that
        can go, the form number and the table place carry the message. */
     td.season, th.season {{ display:none; }}
@@ -898,41 +1143,53 @@ def render(season, rows):
        few pixels, so it keeps a readable width and scrolls sideways instead. */
     .pwrap {{ overflow-x:auto; }}
     .pwrap svg {{ min-width:700px; }}
+    /* Handwriting needs more size than a grotesque to stay legible, so the
+       badge gives up padding on a phone rather than point size. A narrow cell
+       has no spare width beside the record, so the note hangs off the bottom
+       left of the name block instead - still out of flow, still over the rule. */
+    .badge {{ font-size:14px; padding:1px 10px 2px; left:30px; bottom:-9px;
+              transform:rotate(-3.4deg); }}
+    /* No free space beside the clubs at this width - the note covered a name -
+       so it moves out into the date column, under the kick-off, and reads as
+       written in the margin. */
+    .fx .badge {{ left:-56px; right:auto; top:auto; bottom:-6px;
+                  transform:rotate(-4deg); }}
+    /* Less room, so the strokes reach further across the row. */
+    tr.marked {{ background-size:82% 58%, 58% 38%; }}
     .tc {{ gap:7px; }}
-    .lg {{ width:22px; height:22px; }}
-    .tok {{ width:23px; height:23px; font-size:12px; }}
+    .lg {{ width:23px; height:23px; }}
+    .tok {{ width:24px; height:24px; font-size:12.5px; }}
+    .pw b {{ font-size:20px; }}
     /* The chart scales with the viewport, so its labels need bigger user units. */
     .tick {{ font-size:19px; }}
   }}
 </style>
 </head>
 <body>
-<header class="band">
+<header class="mast">
   <div class="wrap">
-    <div class="top">
-      <div class="brand">
-        <p class="league">{html.escape(STAFFEL_NAME)} · Saison {season}</p>
+    <div class="mhead">
+      <div>
         <h1>Power Ranking</h1>
         <p class="tag">Wer gerade gut spielt – gemessen an den letzten fünf Spieltagen und
         daran, gegen wen. Die Tabelle zeigt die Saison, diese Seite den Moment.</p>
       </div>
-      <div class="md">
-        <span class="k">Spieltag</span>
-        <span class="n">{matchday}</span>
-        <span class="dt">{last_date}</span>
+      <p class="where">{html.escape(STAFFEL_NAME)}<br>Saison {season}<br>
+      Nach <b>Spieltag {matchday}</b>, {last_date}</p>
+    </div>
+    <div class="lede">
+      <div class="claim">
+        <p class="pre">{lede_pre}</p>
+        <p class="who">{lede_who}</p>
+        <p class="post">{lede_post}</p>
       </div>
-      <div class="cells">
-        <div class="cell">
-          <span class="k">Beste Form</span>
-          <span class="v sm">{html.escape(top_team["team"])}</span>
-          <span class="s">Form {num(top_team["form"])} · Tabellenplatz
-          {top_team["position"]}</span>
-        </div>
-        <div class="cell">
-          <span class="k">Die Tabelle täuscht am meisten bei</span>
-          <span class="v sm {out_cls}">{html.escape(out["team"])}</span>
-          <span class="s">{out_note}</span>
-        </div>
+      <div class="facts">
+        <p class="fact"><span class="k">Beste Form</span>
+        <span class="t">{html.escape(top_team["team"])}</span>
+        <span class="n pos">{num(top_team["form"])}</span></p>
+        <p class="fact"><span class="k">Schwächste Form</span>
+        <span class="t">{html.escape(bottom_team["team"])}</span>
+        <span class="n neg">{num(bottom_team["form"])}</span></p>
       </div>
     </div>
   </div>
@@ -957,12 +1214,13 @@ def render(season, rows):
     <div class="col">
       <section>
         <h2>Formtabelle</h2>
-        <p class="sub">Sortiert nach den letzten fünf Spieltagen, nicht nach der Saison.</p>
+        <p class="sub">Sortiert nach den letzten fünf Spieltagen, nicht nach der Saison.
+        Fünf Spiele beschreiben, was war – vorhersagen können sie nichts.</p>
         <div class="card rank">
           <table>
             <thead>
               <tr>
-                <th>#</th><th class="l">Team · S-U-N</th><th class="l">Form</th>
+                <th>#</th><th class="l">Team</th><th class="l">Form</th>
                 <th>+/&minus;</th><th class="l season">Saison</th>
                 <th class="s-hide">Sp</th><th class="s-hide">Tore</th>
                 <th class="s-hide">Diff</th><th>Tabelle</th>
@@ -973,8 +1231,19 @@ def render(season, rows):
             </tbody>
           </table>
         </div>
-        <p class="hint"><strong>Form</strong> rechnet nur die letzten fünf Spieltage, dafür mit
-        Gegnerstärke und Torverhältnis: 50 ist Ligadurchschnitt, darüber heißt besser als der
+      </section>
+    </div>
+
+    <div class="col chartcol">
+      <section>
+        <h2>Formverlauf</h2>
+        <p class="sub">Die Form an jedem Spieltag, also immer das Fenster der fünf davor.
+        Diese Linien springen – das ist gewollt, sie zeigen Phasen und keine Bilanz.</p>
+        <div class="card chart">{svg_chart(table, matchdays, "fseries", "form")}</div>
+        <p class="hint">X-Achse: Spieltag, Y-Achse: Form. Eine Zeile in der Tabelle antippen
+        hebt das Team hier und in der Aufstellung hervor.</p>
+        <p class="hint legend"><strong>Form</strong> rechnet nur die letzten fünf Spieltage, dafür
+        mit Gegnerstärke und Torverhältnis: 50 ist Ligadurchschnitt, darüber heißt besser als der
         Schnitt. <strong>Saison</strong> daneben ist der Wert über alle bisherigen Spiele – wer
         dort hoch steht und in der Form tief, hat eine gute Saison, aber gerade eine schwache
         Phase. <strong>Tabelle</strong> ist der offizielle Platz; der Wert dahinter ist die
@@ -989,84 +1258,13 @@ def render(season, rows):
         die Abstände zu klein, um etwas zu bedeuten, bleiben sie weg.</p>
       </section>
     </div>
-
-    <div class="col">
-      <section>
-        <h2>Formverlauf</h2>
-        <p class="sub">Die Form an jedem Spieltag, also immer das Fenster der fünf davor.
-        Diese Linien springen – das ist gewollt, sie zeigen Phasen und keine Bilanz.</p>
-        <div class="card chart">{svg_chart(table, matchdays, "fseries", "form")}</div>
-        <p class="hint">X-Achse: Spieltag, Y-Achse: Form. Eine Zeile in der Tabelle antippen
-        hebt das Team hier und in der Aufstellung hervor.</p>
-      </section>
-    </div>
   </div>
-{forecast_section(season, rows, logos, {t["team"]: t["form"] for t in table})}{predictor_section()}
-  <div class="below">
-  <h2>Was die Zahl kann – und was nicht</h2>
-  <div class="note"><p><strong>Die Form beschreibt, sie sagt nichts vorher.</strong> Fünf Spiele
-  sind viel zu wenig, um zu messen, wie stark ein Team wirklich ist – nachgerechnet an
-  simulierten Saisons trifft ein Fenster dieser Länge die tatsächliche Stärke nur schwach. Wer
-  hier oben steht, hat die letzten fünf Spieltage gut gespielt. Ob er sie auch nächste Woche gut
-  spielt, steht hier nicht, und aus diesen Daten lässt es sich auch nicht sagen.</p></div>
-
-  <div class="prose">
-  <p>Drei Dinge, die man beim Lesen wissen sollte:</p>
-  <p><strong>Die Form schwankt stark – das ist Absicht.</strong> Ein Team kann binnen zwei
-  Spieltagen zehn Punkte gewinnen oder verlieren. Genau dafür ist die Spalte da: Sie soll zeigen,
-  wer <em>gerade</em> läuft, und nicht den Saisonschnitt wiederholen. Wer den ruhigen Blick will,
-  liest die Spalte <strong>Saison</strong> daneben oder gleich die offizielle Tabelle.</p>
-  <p><strong>Ein großer Teil davon ist Zufall.</strong> Bei fünf Spielen entscheidet ein
-  abgefälschter Ball über mehrere Punkte in dieser Wertung. Zwei Teams, die eng beieinander
-  liegen, sind praktisch nicht zu unterscheiden – erst deutliche Abstände über mehrere Spieltage
-  bedeuten etwas.</p>
-  </div>
-
-  <figure class="scale">
-    <div class="track"><span class="occ" style="left:{bottom_team["form"]:.1f}%; width:{max(range_pts, 0.8):.1f}%"></span><span class="mid"></span></div>
-    <div class="ends">
-      <span>0</span>
-      <span>Die ganze Liga in Form: <b>{num(bottom_team["form"])} – {num(top_team["form"])}</b></span>
-      <span>100</span>
-    </div>
-  </figure>
-
-  <div class="prose">
-  <p><strong>Warum die Liga in dieser Wertung so weit auseinanderzieht.</strong> In dieser Liga
-  enden 28,6 % der Spiele mit drei oder mehr Toren Unterschied – eine Simulation mit 14 exakt
-  gleich starken Teams erzeugt allein durch Glück rund die Hälfte der Streuung, die real zu
-  sehen ist. Über eine ganze Saison mittelt sich das weitgehend heraus, und die Spalte
-  <em>Saison</em> dämpft zusätzlich zur Mitte hin. Über fünf Spiele passiert beides nicht: Die
-  Form zeigt die Ausschläge, wie sie sind.</p>
-
-  <h2>Wie gerechnet wird</h2>
-  <p>Ein Elo-System, wie man es vom Schach kennt: Jedes Team startet bei 1500 Punkten, nach
-  jedem Spiel gibt der Verlierer Punkte an den Sieger ab. Wie viele, hängt davon ab, wie
-  überraschend das Ergebnis war und wie hoch gewonnen wurde. Heimvorteil ist eingerechnet
-  (er ist in dieser Liga rund 100 Elo-Punkte wert, gemessen an der eigenen Saison, nicht
-  geschätzt). Am Ende wird das Rating auf eine Skala von 0 bis 100 umgelegt, mit
-  {num(POWER_SCALE_DIVISOR)} Elo-Punkten je Power-Punkt. Nur ausgetragene Spiele zählen;
-  ungleiche Spielanzahl ist deshalb kein Problem.</p>
-
-  <p><strong>Die Form rechnet genauso – nur mit kurzem Gedächtnis.</strong> Für die Spalte
-  <em>Form</em> läuft dieselbe Elo-Rechnung, aber jeder Spieltag beginnt wieder bei 1500 und es
-  zählen nur die letzten fünf Spieltage. Alles davor wird nicht schwächer gewichtet, sondern
-  fällt ganz heraus. Genau das macht den Unterschied zur Spalte <em>Saison</em>: Dort hängt einem
-  Team eine schwache Hinrunde bis zum letzten Spieltag an, hier ist sie nach fünf Spieltagen
-  weg. Weil das Fenster so kurz ist, wird der Wert auch nicht zur Mitte hin gedämpft – sonst
-  stünde die ganze Liga wieder bei 50 und die Spalte wäre sinnlos.</p>
-
-  <p>Warum überhaupt rechnen und nicht einfach Punkte aus fünf Spielen zählen? Weil es einen
-  Unterschied macht, gegen wen. Zwei Teams können beide zwölf von fünfzehn Punkten geholt
-  haben – wer sie gegen die Spitze geholt hat, steht hier vorn.</p>
-  </div>
-
+{outlook}
   <footer>
-    Datenquelle: <a href="{SOURCE_URL}">fussball.de</a> (DFB) – dort stehen die offizielle
+    <p>Datenquelle: <a href="{SOURCE_URL}">fussball.de</a> (DFB) – dort stehen die offizielle
     Tabelle und alle Ergebnisse. Diese Seite zeigt nur daraus berechnete Werte.
-    Privates, nicht-kommerzielles Projekt · Stand der Berechnung: {generated}
+    Privates, nicht-kommerzielles Projekt. Stand der Berechnung: {generated}</p>
   </footer>
-  </div>
 </main>
 <script>
   const rows = [...document.querySelectorAll('tbody tr[data-rank]')];
@@ -1089,6 +1287,12 @@ def render(season, rows):
     apply();
   }}
 
+  // On a phone the pitch is wider than the screen and scrolls. Left-aligned it
+  // opens on the weakest teams with the halfway line off-screen, so it starts
+  // centred on the league average instead.
+  const pw = document.querySelector('.pwrap');
+  if (pw) pw.scrollLeft = (pw.scrollWidth - pw.clientWidth) / 2;
+
   rows.forEach(tr => {{
     tr.addEventListener('click', () => toggle(tr.dataset.rank));
     tr.addEventListener('keydown', e => {{
@@ -1104,10 +1308,34 @@ def render(season, rows):
 """
 
 
+def check_css(html):
+    """The stylesheet is one long f-string, and a stray `*/` while editing a
+    comment silently kills every rule after it - the page still renders, just
+    wrong. Twice now. The committed HTML is the deployment, so refuse to write
+    one rather than notice it in a screenshot."""
+    css = html.split("<style>", 1)[1].split("</style>", 1)[0]
+    depth = i = 0
+    while i < len(css):
+        if css.startswith("/*", i):
+            depth += 1
+        elif css.startswith("*/", i):
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"unopened CSS comment near: {css[max(0, i - 90):i + 2]!r}")
+        else:
+            i += 1
+            continue
+        i += 2
+    if depth:
+        raise ValueError("unclosed CSS comment")
+
+
 def write_report(season, rows, path=OUT_HTML):
+    html_out = render(season, rows)
+    check_css(html_out)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        f.write(render(season, rows))
+        f.write(html_out)
     return path
 
 
