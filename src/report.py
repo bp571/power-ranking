@@ -5,7 +5,6 @@ never the scraped match rows themselves; fussball.de is linked as the source.
 """
 
 import base64
-import csv
 import html
 import math
 import os
@@ -15,13 +14,15 @@ from datetime import date
 from config import (
     FORM_WINDOW,
     LOGO_DIR,
-    MATCHES_CSV,
     POWER_SCALE_DIVISOR,
     R0,
     SEASON_CURRENT,
+    SEASON_PREVIOUS,
     STAFFEL_NAME,
     team_slug,
 )
+from explore_predictors import SKIP_MATCHDAYS, compare
+from predict import forecast, load, next_matchday, track_record
 from rating import EloRating
 from score import clamp, normalize_to_power_score
 
@@ -64,9 +65,16 @@ def load_logos():
     return logos
 
 
-def load_played(season):
-    with open(MATCHES_CSV, encoding="utf-8", newline="") as f:
-        return [r for r in csv.DictReader(f) if r["season"] == season and r["status"] == "played"]
+WEEKDAYS = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+
+
+def short_date(iso):
+    d = date.fromisoformat(iso)
+    return f"{WEEKDAYS[d.weekday()]} {d.day:02d}.{d.month:02d}."
+
+
+def pct(x):
+    return f"{round(x * 100)}&nbsp;%"
 
 
 def replay(rows):
@@ -421,6 +429,142 @@ def svg_chart(table, matchdays, key="series", prefix="line"):
     return "\n".join(parts)
 
 
+def crest_img(logos, team):
+    crest = logos.get(team_slug(team))
+    return f'<img class="lg sm" src="{crest}" alt="">' if crest else ""
+
+
+def forecast_section(season, played, logos, forms):
+    """The next matchday as probabilities. Empty string if nothing is scheduled,
+    which is what a finished season looks like."""
+    matchday, fixtures = next_matchday(load(season, "scheduled"))
+    tips = forecast(played, fixtures)
+    if not tips:
+        return ""
+
+    # The one fixture worth marking, by the page's own headline number: the pair
+    # with the best combined form. Deliberately not "closest percentages" - those
+    # sit inside a few points of each other all season, so picking the tightest
+    # one would be marking noise.
+    top = max(range(len(tips)),
+              key=lambda i: forms.get(tips[i]["home"], 50) + forms.get(tips[i]["away"], 50))
+
+    body = []
+    for i, t in enumerate(tips):
+        best = max(("p_home", "p_draw", "p_away"), key=t.__getitem__)
+        cells = "".join(
+            f'<td class="p{" best" if key == best else ""}">{pct(t[key])}</td>'
+            for key in ("p_home", "p_draw", "p_away")
+        )
+        sides = "".join(
+            f'<div class="fxt">{crest_img(logos, t[side])}'
+            f'<span>{html.escape(t[side])}</span></div>' for side in ("home", "away")
+        )
+        bar = "".join(f'<i class="{cls}" style="width:{t[key]:.1%}"></i>'
+                      for cls, key in (("w", "p_home"), ("d", "p_draw"), ("l", "p_away")))
+        mark = '<div class="badge">Topspiel</div>' if i == top else ""
+        body.append(
+            f'<tr class="{"hl" if i == top else ""}">'
+            f'<td class="l dt">{short_date(t["date"])}</td>'
+            f'<td class="l fx">{mark}{sides}<div class="bar">{bar}</div></td>'
+            f'{cells}'
+            f'<td class="xg s-hide">{num(t["xg_home"] + t["xg_away"])}</td></tr>'
+        )
+
+    league_goals = sum(int(r["home_goals"]) + int(r["away_goals"]) for r in played) / len(played)
+
+    record = track_record(played)
+    if record:
+        ahead = "vorn" if record["rps"] < record["base_rps"] else "hinten"
+        balance = (
+            f'<strong>Bilanz.</strong> {record["hits"]} von {record["n"]} Spielen dieser '
+            f'Saison richtig – gemeint ist jeweils der wahrscheinlichste Ausgang. Als '
+            f'Fehlerwert gerechnet (kleiner ist besser): {num(record["rps"], 3)} gegen '
+            f'{num(record["base_rps"], 3)}, wenn man stur die Liga-Quote tippt, die Prognose '
+            f'liegt also knapp {ahead}. Bei {record["n"]} Spielen heißt das noch nichts; über '
+            f'die Vorsaison gerechnet lag die Trefferquote bei 57&nbsp;%.'
+        )
+    else:
+        balance = "<strong>Bilanz.</strong> Noch zu wenige Spiele für eine Bilanz."
+
+    return f"""
+  <section class="fcast">
+    <h2>Prognose für Spieltag {matchday}</h2>
+    <p class="sub">Was das Modell für die nächsten Spiele erwartet – Wahrscheinlichkeiten,
+    keine Tipps.</p>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th class="l">Termin</th><th class="l">Begegnung</th>
+            <th>Heim</th><th>Remis</th><th>Ausw.</th>
+            <th class="s-hide">Tore erwartet</th>
+          </tr>
+        </thead>
+        <tbody>
+          {chr(10).join("          " + r for r in body).strip()}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint"><strong>Wie das gerechnet wird.</strong> Aus allen bisherigen Ergebnissen
+    bekommt jedes Team eine Angriffs- und eine Abwehrstärke. Daraus folgt, wie viele Tore beide
+    Seiten in dieser Paarung im Schnitt erzielen – Heimvorteil eingerechnet –, und aus dem
+    Abstand zwischen beiden werden die drei Prozentwerte. Die Umrechnung ist an der kompletten
+    Vorsaison geeicht, nicht geschätzt. <strong>Tore erwartet</strong> ist die Summe für beide
+    Mannschaften, also eher ein Hinweis auf offenes Spiel oder Abtasten als auf den Sieger:
+    Der Ligaschnitt dieser Saison liegt bei {num(league_goals)} Toren pro Spiel.
+    <strong>Topspiel</strong> markiert die Paarung mit der besten gemeinsamen Form beider
+    Teams – eine Auszeichnung nach der Formtabelle oben, keine Aussage über den Ausgang.</p>
+    <p class="hint">Zwei Dinge fallen auf und sind beide richtig so. Ein <strong>Remis ist nie
+    der wahrscheinlichste Ausgang</strong>, obwohl rund jedes sechste Spiel remis endet – für
+    ein Unentschieden müssen beide Seiten dieselbe Zahl treffen, jede einzelne Torzahl ist
+    unwahrscheinlicher als „irgendein Sieg“. Und die <strong>Prozente liegen eng beieinander</strong>,
+    auch wenn ein Team klar stärker eingeschätzt wird. Das ist gemessen und nicht gedämpft: Ein
+    ganzes Tor Vorsprung in der Erwartung verschiebt die Siegchance in dieser Liga nur um rund
+    sechs Prozentpunkte, weil die Ergebnisse hier zu stark streuen, um mehr herzugeben.</p>
+    <p class="hint">{balance}</p>
+  </section>
+"""
+
+
+def predictor_section():
+    """The measured table of things that ought to predict better. None does, and
+    showing that is the honest way to publish a forecast at all."""
+    body = []
+    for r in compare():
+        lead = ("<span class=\"flat\">Referenz</span>" if r["baseline"] else
+                f'{num(r["lead"] * 1000, 1)} <span class="pm">± {num(r["se"] * 1000, 1)}</span>')
+        body.append(f'<tr><td class="l">{r["name"]}</td>'
+                    f'<td>{num(r["rps"], 4)}</td><td class="lead">{lead}</td></tr>')
+
+    return f"""
+  <section class="fcast">
+    <h2>Was besser sein müsste – und es nicht ist</h2>
+    <p class="sub">Jeder dieser Ansätze wurde mit demselben Verfahren in Wahrscheinlichkeiten
+    umgerechnet und an der Saison {SEASON_PREVIOUS} nachgerechnet, ab Spieltag
+    {SKIP_MATCHDAYS + 1}.</p>
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th class="l">Ansatz</th><th>Fehler</th><th>Vorsprung auf die Liga-Quote</th></tr>
+        </thead>
+        <tbody>
+          {chr(10).join("          " + r for r in body).strip()}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint"><strong>Fehler</strong> ist der mittlere Prognosefehler über alle Spiele,
+    kleiner ist besser. <strong>Vorsprung</strong> ist der Abstand zur simpelsten aller
+    Auskünfte – „in dieser Liga gewinnt meistens das Heimteam“ –, in Tausendsteln und mit
+    Standardfehler dahinter. Kein einziger Ansatz erreicht zwei Standardfehler: Keiner ist
+    nachweisbar besser als diese Auskunft. Auch die Reihenfolge in der Tabelle ist selbst
+    Zufall – rechnet man die Eichung strenger, tauschen die Zeilen die Plätze. Deshalb steht die
+    Prognose oben als Blickwinkel da und nicht als Tipp, und deshalb bleibt die Form auf dieser
+    Seite eine Beschreibung.</p>
+  </section>
+"""
+
+
 def render(season, rows):
     table, matchdays = build_table(rows)
     matchday = matchdays[-1]
@@ -444,6 +588,18 @@ def render(season, rows):
     else:
         out_note = "Form und Tabelle sind überall deckungsgleich"
     out_cls = "up" if out_diff > 0 else ("down" if out_diff < 0 else "flat")
+
+    # Two markers on the table, each by a fixed rule so a reader can check them
+    # against the row they sit on. Both have a floor: one place of difference or
+    # a form change of half a point is well inside the noise this page keeps
+    # warning about, and a badge would sell it as a story.
+    # Not `out` above: that is the largest gap in either direction, and the badge
+    # only ever marks a team playing above its table place.
+    best_gap, hot_rank = max((t["position"] - (rank + 1), rank) for rank, t in enumerate(table))
+    hot_rank = hot_rank if best_gap >= 2 else None
+    jumps = [(t["delta"], rank) for rank, t in enumerate(table) if t["delta"] is not None]
+    best_delta, best_rank = max(jumps, default=(0, None))
+    jump_rank = best_rank if best_delta >= 1.5 and best_rank != hot_rank else None
 
     logos = load_logos()
     pitch_svg, pitch_lo, pitch_hi = svg_pitch(table, logos)
@@ -469,13 +625,19 @@ def render(season, rows):
         tok = f'<span class="tok {side}">{rank + 1}</span>'
         crest = logos.get(team_slug(t["team"]))
         crest = f'<img class="lg" src="{crest}" alt="">' if crest else ""
+        if rank == hot_rank:
+            badge = '<span class="badge">Mannschaft der Stunde</span>'
+        elif rank == jump_rank:
+            badge = '<span class="badge">Formsprung</span>'
+        else:
+            badge = ""
 
         body_rows.append(
             f'<tr data-rank="{rank}" tabindex="0" '
             f'style="--c:{PALETTE[rank % len(PALETTE)]};--i:{rank}">'
             f'<td class="rank">{tok}</td>'
             f'<td class="team"><div class="tc">{crest}<div>'
-            f'<span class="tn">{html.escape(t["team"])}</span>'
+            f'<span class="tn">{html.escape(t["team"])}{badge}</span>'
             f'<span class="form"><span class="seg" aria-hidden="true">{segs}</span>'
             f'<span class="rt">{w}-{d}-{l}</span></span></div></div></td>'
             f'<td class="power"><div class="pw"><b>{num(t["form"])}</b></div></td>'
@@ -498,7 +660,7 @@ def render(season, rows):
   :root {{
     --slate:#1b2a36; --slate-2:#22343f; --ink:#16202a; --muted:#5c6874;
     --paper:#edf0f3; --card:#fff; --line:#e3e7eb; --track:#e8ecef;
-    --up:#1c7a58; --down:#9c2f4a; --grey:#d7dde2;
+    --up:#1c7a58; --down:#9c2f4a; --grey:#d7dde2; --mark:#9a5316;
     /* Same semantics, lifted for legibility on the slate ground. */
     --up-l:#57c79b; --down-l:#e8788f; --on-slate:#a9bccb;
   }}
@@ -607,6 +769,38 @@ def render(season, rows):
   .chip.up {{ background:#dcefe6; }} .chip.down {{ background:#f6e5ea; }}
   .chip.flat {{ background:#eef1f3; }}
 
+  /* Editorial marker, deliberately in a colour no data uses: green and wine
+     mean above and below average everywhere else on the page, and a badge is
+     not a measurement. */
+  .badge {{ display:inline-block; margin-left:7px; padding:1px 7px; border-radius:99px;
+            font-size:10.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+            white-space:nowrap; vertical-align:1px;
+            background:#fbeedd; color:var(--mark); border:1px solid #f0dcc2; }}
+
+  /* ---- Forecast and the predictor comparison ------------------------------ */
+  /* Capped rather than full-width: a six-column table stretched to 1760px reads
+     as sparse, and the prose below keeps its own measure the same way. */
+  .fcast {{ margin-top:34px; max-width:1080px; }}
+  .fcast td.l {{ text-align:left; }}
+  .fcast td.dt {{ color:var(--muted); font-size:13px; white-space:nowrap; }}
+  .fcast td.p {{ width:64px; }}
+  .fcast td.best {{ font-weight:700; }}
+  .fcast td.xg, .fcast td.lead {{ color:var(--muted); white-space:nowrap; }}
+  .fcast .pm {{ font-size:12.5px; }}
+  .fcast tr.hl {{ background:#fdf7ef; }}
+  .fcast tr.hl td:first-child {{ box-shadow:inset 3px 0 0 var(--mark); }}
+  .fx .badge {{ margin:0 0 5px; }}
+  .fxt {{ display:flex; align-items:center; gap:8px; line-height:1.3; }}
+  .fxt + .fxt {{ margin-top:3px; }}
+  .lg.sm {{ width:20px; height:20px; }}
+  /* Same three colours as the result dots, and the same meaning: seen from the
+     home side, win / draw / loss. */
+  .bar {{ display:flex; height:6px; max-width:280px; margin-top:7px;
+          border-radius:99px; overflow:hidden; background:var(--track); }}
+  .bar i.w {{ background:var(--up); }}
+  .bar i.d {{ background:#aeb9c2; }}
+  .bar i.l {{ background:var(--down); }}
+
   /* ---- The pitch panel ---------------------------------------------------- */
   .pitchcol {{ background:var(--slate); border-radius:12px; padding:12px 14px 11px;
                background-image:repeating-linear-gradient(90deg,
@@ -684,7 +878,7 @@ def render(season, rows):
   }}
   @media (max-width:1399px) {{
     /* Stacked: keep one comfortable measure instead of stretching to 1760px. */
-    .dash, .pitchsec {{ max-width:1080px; margin-left:auto; margin-right:auto; }}
+    .dash, .pitchsec, .fcast {{ max-width:1080px; margin-left:auto; margin-right:auto; }}
   }}
   @media (max-width:700px) {{
     .s-hide {{ display:none; }}
@@ -788,7 +982,11 @@ def render(season, rows):
         zwei Plätze besser als in der Tabelle, das Team spielt gerade also über seinem
         Saisonstand. <strong>+/&minus;</strong> ist die Veränderung der Form gegenüber dem
         letzten Spieltag. Die Punkte unter dem Teamnamen sind dieselben fünf Spiele, chronologisch
-        von links nach rechts: grün Sieg, grau Unentschieden, rot Niederlage.</p>
+        von links nach rechts: grün Sieg, grau Unentschieden, rot Niederlage.
+        Zwei Marker, beide nach fester Regel: <strong>Mannschaft der Stunde</strong> steht beim
+        Team mit dem größten Vorsprung dieser Formtabelle auf den eigenen Tabellenplatz,
+        <strong>Formsprung</strong> beim größten Zugewinn gegenüber dem letzten Spieltag. Sind
+        die Abstände zu klein, um etwas zu bedeuten, bleiben sie weg.</p>
       </section>
     </div>
 
@@ -803,7 +1001,7 @@ def render(season, rows):
       </section>
     </div>
   </div>
-
+{forecast_section(season, rows, logos, {t["team"]: t["form"] for t in table})}{predictor_section()}
   <div class="below">
   <h2>Was die Zahl kann – und was nicht</h2>
   <div class="note"><p><strong>Die Form beschreibt, sie sagt nichts vorher.</strong> Fünf Spiele
@@ -919,4 +1117,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rebuild docs/index.html from matches.csv")
     parser.add_argument("--season", default=SEASON_CURRENT)
     args = parser.parse_args()
-    print(write_report(args.season, load_played(args.season)))
+    print(write_report(args.season, load(args.season)))

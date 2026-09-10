@@ -24,6 +24,8 @@ python run.py --season 2025/26    # a past season
 python run.py --cached            # parse saved pages in data/raw, no network
 python src/report.py              # rebuild the page from data/matches.csv alone, no network
 python src/backtest.py            # re-run the walk-forward evaluation
+python src/predict.py             # next matchday's probabilities in the terminal
+python src/explore_predictors.py  # the predictor comparison the page publishes
 ```
 
 After a matchday: `python run.py`, then commit and push — GitHub Pages rebuilds in about a minute.
@@ -39,7 +41,12 @@ run.py
   ├─ rating          replay chronologically -> Elo per team
   ├─ score           shrink + normalize -> power score 0-100
   └─ report          + form over the last 5 matchdays -> docs/index.html
+                     + predict     scheduled rows -> next matchday's probabilities
+                     + explore_predictors  the candidate table published beside them
 ```
+
+- The forecast is the one part that reads `status="scheduled"` rows; everything else ignores
+  them. A season with nothing scheduled left simply renders without that section.
 
 - **A season is identified by its Staffel id, not by the URL slug** — to add one, take its id from
   the season dropdown on any Staffel page and put it in `STAFFEL_IDS`.
@@ -136,6 +143,38 @@ Two more, measured when the page was rebuilt around form:
   remaining signal. `FORM_WINDOW = 5` is chosen against that knowledge, not in ignorance of it,
   and the page says outright that the column describes rather than predicts.
 
+Five more, measured when the page gained a forecast (`python src/explore_predictors.py`, same
+protocol as the backtest: one ordered logistic with three parameters per candidate, fitted on
+2025/26 and scored from matchday 6 on, n=147, paired against the league's own H/D/A rates):
+
+| Candidate | RPS | lead over the base rate |
+|---|---|---|
+| Form, last 5 matchdays | 0.2157 | +0.0052 ± 0.0052 |
+| Expected goals (Poisson) | 0.2164 | +0.0045 ± 0.0044 |
+| Season Elo | 0.2170 | +0.0039 ± 0.0048 |
+| Table position | 0.2178 | +0.0031 ± 0.0039 |
+| Points per game | 0.2185 | +0.0024 ± 0.0023 |
+| Rest days before the match | 0.2207 | +0.0002 ± 0.0006 |
+| Club's own home strength | 0.2207 | +0.0002 ± 0.0007 |
+| League H/D/A base rate | 0.2209 | reference |
+
+- **Nothing clears two standard errors, and the ordering itself is noise.** Refitting the
+  calibration walk-forward on each matchday instead of once on the season moves every candidate
+  into 0.223–0.230 and reshuffles them — season Elo then lands *exactly* on the base rate. With
+  ~13 candidates tried, a best t of 1.8 is what the null produces. **Do not read this table as a
+  ranking of methods**; read it as the spread being smaller than its own error.
+- **Form does not predict, even where it looks best.** Its top row here is in-sample calibration
+  and t = 1.01; walk-forward it is t = 0.34. This changes nothing about `FORM_WINDOW` or about the
+  page's wording — the momentum finding above still stands.
+- **No club has a home advantage of its own.** Split-half over the season (each side's home
+  over-performance in the Hinrunde against the Rückrunde) gives r = **−0.194** over 14 teams. The
+  league-wide `HFA = 100` is the whole story. **Do not add per-team venue terms.**
+- **Rest days are worse than nothing** — the irregular amateur fixture list (midweek, cup,
+  postponements) makes this pure overfitting.
+- **Goals carry at least as much as results.** The Poisson expected-goal difference is the one
+  candidate that is stable across shrinkage settings (2/4/8 all land at 0.223 walk-forward). Not
+  significant either, but it is why `predict.py` forecasts from goals rather than from the Elo gap.
+
 Two methodological notes:
 
 - **RPS cannot identify `HFA`.** It enters as a constant offset that the calibration thresholds
@@ -152,8 +191,8 @@ build step, no image files. Form-sorted table (rank, team with its last five res
 vs. previous matchday, season power score, matches played, record, goals, goal difference, official
 table position with its distance to the form rank), a full-width pitch laying the league out by
 form, one inline-SVG progression chart for the form window — clicking a row highlights that team in
-table, pitch and chart at once — and plain-language German text on what the number can and cannot
-do plus a source link.
+table, pitch and chart at once — then the next matchday's forecast, the predictor table behind it,
+and plain-language German text on what the number can and cannot do plus a source link.
 
 **The page is sorted by form, not by the power score.** The table already tells a reader who has
 the points; what it cannot tell them is that the team in twelfth has won four of five. That gap is
@@ -161,6 +200,14 @@ the page's reason to exist, so `report.form_series()` — Elo over the last `FOR
 matchdays only, restarted from 1500 at every matchday — is the headline number, and the power
 score rides alongside in a quieter **Saison** column. The chip beside the official position is now
 the distance to the *form* rank: 2025/26 ends with SC Weiler tenth in the table and third in form.
+
+**Three editorial markers, each by a fixed rule with a floor**, so a reader can check a badge
+against the row it sits on: *Mannschaft der Stunde* (largest positive gap from form rank to table
+position, needs ≥ 2 places), *Formsprung* (largest gain over the previous matchday, needs ≥ 1.5
+points, skipped if it would land on the same row), *Topspiel* in the forecast (best combined form of
+the two sides — deliberately **not** "closest percentages", which span a few points all season and
+would mark noise). Below their floors the badges simply do not render. They are drawn in an amber
+that no data uses, because green and wine mean above and below average everywhere else on the page.
 
 Two consequences that must not be undone by accident:
 
@@ -183,6 +230,41 @@ Two consequences that must not be undone by accident:
   time, so the terminal output and the published page are the same numbers in the same order by
   construction. It prints form, season score, matches and the official position with its distance
   to the form rank — the same columns the page leads with.
+
+### The forecast
+
+Below the dashboard, [src/predict.py](src/predict.py) turns the next matchday into H/D/A
+percentages and expected goals, and [src/explore_predictors.py](src/explore_predictors.py) puts the
+candidate table straight underneath it. Publishing a forecast is only defensible next to the
+measurement that says how little it is worth, so **the two sections ship together** — never the
+forecast alone.
+
+Four things that must not be undone by accident:
+
+- **One model for the whole section.** A small Poisson attack/defence fit gives both sides an
+  expected number of goals, and the *same* difference goes through the ordered logistic to become
+  the percentages. Elo-based percentages beside Poisson goals contradicted each other in sign in
+  **31%** of 2025/26 matches, which on a page reads as a bug rather than as two lenses. If the
+  forecast ever moves back to the Elo gap, the goals column has to go with it.
+- **The goals column shows the match total, never the pair.** `1,3 : 2,8` next to "44% Heim" is
+  the same contradiction one model deeper: the two expected goals are weak evidence and the
+  percentages correctly fall back towards the home-heavy base rate, but two numbers of very
+  different evidential weight sitting side by side with equal visual weight read as a bug. The sum
+  (`4,1`) carries the one thing the percentages do not — open game or grind — and cannot disagree
+  with them. **Do not restore the per-team pair.** Measured: bucketing 2025/26 by expected-goal
+  difference, the fitted slope β = 0.266 *is* the maximum-likelihood value and the likelihood is
+  flat from β = 0.15 to 0.45 (nll moves 0.35 over 168 matches). One goal of expected supremacy is
+  worth about six percentage points of win probability in this league. That is the finding, not a
+  damping bug.
+- **The calibration is fitted on `SEASON_PREVIOUS`**, so it never sees a match it scores. This is
+  the one place a stale season id would silently degrade the page rather than raise.
+- **The track record is recomputed, not stored.** A forecast is a pure function of the results
+  before it, so replaying `matches.csv` reproduces exactly what the page showed — no
+  `predictions.csv` to drift out of sync. It is compared against the constant league base rate,
+  which is the honest zero point, and the page prints the comparison even while it is losing.
+- **The percentages are flat on purpose.** They span roughly 44–65% for the home side and a draw
+  is never the most likely outcome. Both surprise readers, so the page explains both in as many
+  words rather than hiding them.
 
 ## Publishing
 
@@ -220,9 +302,17 @@ Considered and consciously left out:
   looks like an ordinary 0:2 in the schedule view, and the marker would need each match's detail
   page (~180 extra requests per season). 0:2/2:0 results are 7% of a season and only some are
   forfeits, so contamination is small. Revisit if a season shows unusually many.
-- **Attack/defense split** (Poisson/Dixon-Coles) — more informative than Elo, but needs roughly 2×
-  the data. The lever for it is more Staffeln, not a bigger model: ten of them is ~1800 matches a
-  season and only costs another id in `STAFFEL_IDS`.
+- **Attack/defense split in the *ranking*** (Poisson/Dixon-Coles). A shrunk Poisson fit now drives
+  the forecast, where its expected goals are the point; folding it into the ranking is a different
+  claim and still needs roughly 2× the data. The lever for that is more Staffeln, not a bigger
+  model: ten of them is ~1800 matches a season and only costs another id in `STAFFEL_IDS`.
+- **Storing published forecasts** — a `data/predictions.csv` would be state that can drift from the
+  code that wrote it, for a record `predict.track_record()` recomputes exactly. Only worth it if
+  the forecast method ever changes mid-season, and then the honest move is to reset the record.
+- **Carrying ratings over between seasons.** Last season's final ratings beat this season's own Elo
+  after five matchdays (RPS 0.2322 vs 0.2395), which is what the "48% of the spread is luck"
+  finding predicts. But 7 of 14 teams are new in 2026/27 and n=34 — far too thin to act on. Revisit
+  only in a season with little promotion and relegation churn.
 - **A drifting state-space model** (Glicko-2 / Kalman) — built, measured, removed. It rates
   strength as a hidden state with a random walk and reports an uncertainty band, which is the
   principled way to ask "how strong now". Two findings killed it: the drift rate is unidentifiable
